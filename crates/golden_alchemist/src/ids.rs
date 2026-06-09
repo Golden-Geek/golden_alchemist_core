@@ -84,6 +84,11 @@ uuid_id!(AlchemistGraphId);
 uuid_id!(ANodeId);
 
 string_id!(ANodeTypeId);
+string_id!(ContextDimensionId);
+string_id!(FormulaId);
+string_id!(SurfaceContributionId);
+string_id!(SurfaceItemId);
+string_id!(SurfaceSectionId);
 string_id!(SocketId);
 string_id!(ValueTypeId);
 string_id!(FacetId);
