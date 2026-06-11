@@ -1,4 +1,5 @@
 use indexmap::IndexMap;
+use smol_str::SmolStr;
 
 use crate::{
     ANodeInstance, ANodeTypeId, CompiledNodeOperation, Diagnostic, DiagnosticOrigin, ResolvedANodeSignature,
@@ -74,6 +75,40 @@ pub struct SignatureCtx<'a> {
     pub value_types: &'a ValueTypeRegistry,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ANodeConfigFieldDecl {
+    pub id: SmolStr,
+    pub label: String,
+    pub description: Option<String>,
+    pub editor: Option<String>,
+    pub default_value: RuntimeValue,
+}
+
+impl ANodeConfigFieldDecl {
+    #[must_use]
+    pub fn new(id: impl Into<SmolStr>, label: impl Into<String>, default_value: RuntimeValue) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            editor: None,
+            default_value,
+        }
+    }
+
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_editor(mut self, editor: impl Into<String>) -> Self {
+        self.editor = Some(editor.into());
+        self
+    }
+}
+
 pub trait ANodeDeclaration: Send + Sync {
     fn type_id(&self) -> ANodeTypeId;
     fn label(&self) -> &'static str;
@@ -81,6 +116,9 @@ pub trait ANodeDeclaration: Send + Sync {
     fn execution_kind(&self) -> ExecutionKind;
     fn breaks_dependency_cycle(&self) -> bool {
         false
+    }
+    fn config_fields(&self) -> Vec<ANodeConfigFieldDecl> {
+        Vec::new()
     }
     fn signature(&self, ctx: &SignatureCtx<'_>, instance: &ANodeInstance, bindings: &TypeBindings) -> ANodeSignature;
     fn compile_operation(

@@ -1,7 +1,8 @@
 use crate::{
-    ANodeDeclaration, ANodeInstance, ANodeRegistry, ANodeSignature, ANodeTypeId, CompiledNodeOperation, Diagnostic,
-    ExecutionKind, InputSocketDecl, OutputSocketDecl, RegistryError, ResolvedANodeSignature, RuntimeValue,
-    SignatureCtx, TypeBindingSource, TypeBindings, TypeConstraint, TypeVar, ValueTypeId,
+    ANodeConfigFieldDecl, ANodeDeclaration, ANodeInstance, ANodeRegistry, ANodeSignature, ANodeTypeId,
+    CompiledNodeOperation, Diagnostic, ExecutionKind, InputSocketDecl, OutputSocketDecl, RegistryError,
+    ResolvedANodeSignature, RuntimeValue, SignatureCtx, TypeBindingSource, TypeBindings, TypeConstraint, TypeVar,
+    ValueTypeId,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +119,17 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
 
     fn breaks_dependency_cycle(&self) -> bool {
         self.kind == PrimitiveNodeKind::DelayOneTick
+    }
+
+    fn config_fields(&self) -> Vec<ANodeConfigFieldDecl> {
+        match self.kind {
+            PrimitiveNodeKind::Constant => vec![
+                ANodeConfigFieldDecl::new("value", "Value", RuntimeValue::Float(0.0))
+                    .with_description("The constant value emitted by this node.")
+                    .with_editor("runtime_value"),
+            ],
+            _ => Vec::new(),
+        }
     }
 
     fn signature(&self, _ctx: &SignatureCtx<'_>, instance: &ANodeInstance, _bindings: &TypeBindings) -> ANodeSignature {

@@ -21,9 +21,9 @@ pub use expose::{
     ValueTypeSpec,
 };
 pub use formula::{
-    AlchemistFormula, AlchemistFormulaInstance, FormulaContextContract, FormulaFamily, FormulaMigration,
-    FormulaOverrides, FormulaRef, FormulaSurface, FormulaSurfaceBindings, SurfaceItem, SurfaceItemKind, SurfaceSection,
-    SurfaceSource,
+    AlchemistFormula, AlchemistFormulaInstance, FormulaContextContract, FormulaMaterializationError, FormulaMigration,
+    FormulaOverrides, FormulaRef, FormulaSurface, FormulaSurfaceBindings, ManagedANodeBindings, SurfaceItem,
+    SurfaceItemKind, SurfaceSection, SurfaceSource,
 };
 pub use graph::{
     AEdge, ANodeConfig, ANodeInstance, ANodeUiState, AlchemistGraph, GraphComment, GraphEditError, GraphGroup,
@@ -34,7 +34,10 @@ pub use ids::{
     SocketId, SurfaceContributionId, SurfaceItemId, SurfaceSectionId, ValueSlotId, ValueTypeId,
 };
 pub use library::{PrimitiveNodeDeclaration, PrimitiveNodeKind, primitive_node_registry, register_primitive_nodes};
-pub use node::{ANodeDeclaration, ANodeSignature, ExecutionKind, InputSocketDecl, OutputSocketDecl, SignatureCtx};
+pub use node::{
+    ANodeConfigFieldDecl, ANodeDeclaration, ANodeSignature, ExecutionKind, InputSocketDecl, OutputSocketDecl,
+    SignatureCtx,
+};
 pub use registry::{
     ANodeRegistry, ConversionKind, ConversionRule, FacetDescriptor, FacetRegistry, RegistryError, ValueTypeDescriptor,
     ValueTypeRegistry, ValueTypeUiDescriptor,

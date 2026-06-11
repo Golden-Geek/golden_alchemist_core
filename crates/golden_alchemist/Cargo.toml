@@ -8,7 +8,6 @@ license.workspace = true
 default = ["serde"]
 serde = ["dep:serde", "dep:serde_json"]
 rhai = []
-protocol = []
 debug_trace = []
 golden_core_integration = []
 

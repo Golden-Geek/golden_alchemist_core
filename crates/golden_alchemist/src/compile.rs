@@ -227,6 +227,9 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
 }
 
 fn input_default(instance: &crate::ANodeInstance, socket: &SocketId, ctx: &CompileCtx<'_>) -> Option<RuntimeValue> {
+    if let Some(value) = instance.input_defaults.get(socket) {
+        return Some(value.clone());
+    }
     let declaration = ctx.nodes.get(&instance.type_id)?;
     let signature = declaration.signature(
         &crate::SignatureCtx {

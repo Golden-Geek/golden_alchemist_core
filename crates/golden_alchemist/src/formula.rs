@@ -2,16 +2,8 @@ use indexmap::IndexMap;
 
 use crate::{
     ANodeFieldPath, ANodeId, AlchemistGraph, ContextDimensionId, Diagnostic, FormulaId, ParamUiHints, RuntimeValue,
-    SurfaceContributionId, SurfaceItemId, SurfaceSectionId, ValueTypeSpec,
+    StableRef, SurfaceContributionId, SurfaceItemId, SurfaceSectionId, ValueTypeSpec,
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum FormulaFamily {
-    Action,
-    Mapping,
-    CustomUser,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -55,7 +47,6 @@ pub struct SurfaceSection {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SurfaceSource {
     Formula,
-    Processor,
     ANode {
         node_id: ANodeId,
         contribution_id: SurfaceContributionId,
@@ -108,13 +99,20 @@ pub struct FormulaOverrides {
     pub values: IndexMap<SurfaceItemId, RuntimeValue>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ManagedANodeBindings {
+    pub configuration_roots: IndexMap<ANodeId, StableRef>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlchemistFormula {
     pub id: FormulaId,
     pub version: u32,
     pub label: String,
-    pub family: FormulaFamily,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
     pub graph: AlchemistGraph,
     pub surface: FormulaSurface,
     pub context_contract: FormulaContextContract,
@@ -129,13 +127,32 @@ impl AlchemistFormula {
                 id: self.id.clone(),
                 version: self.version,
             },
-            family: self.family,
-            graph_instance: self.graph.clone(),
-            surface: self.surface.clone(),
             surface_bindings: FormulaSurfaceBindings::from_surface(&self.surface),
             overrides: FormulaOverrides::default(),
+            managed_bindings: ManagedANodeBindings::default(),
             diagnostics: Vec::new(),
         }
+    }
+
+    pub fn materialize(
+        &self,
+        instance: &AlchemistFormulaInstance,
+    ) -> Result<AlchemistGraph, FormulaMaterializationError> {
+        instance.require_compatible(self)?;
+        let mut graph = self.graph.clone();
+        for (surface_item, value) in &instance.overrides.values {
+            let target = instance
+                .surface_bindings
+                .bindings
+                .get(surface_item)
+                .ok_or_else(|| FormulaMaterializationError::MissingSurfaceBinding(surface_item.clone()))?;
+            let node = graph
+                .nodes
+                .get_mut(&target.node)
+                .ok_or(FormulaMaterializationError::MissingTargetNode(target.node))?;
+            node.config.set(target.field.clone(), value.clone());
+        }
+        Ok(graph)
     }
 }
 
@@ -143,10 +160,38 @@ impl AlchemistFormula {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlchemistFormulaInstance {
     pub formula_ref: FormulaRef,
-    pub family: FormulaFamily,
-    pub graph_instance: AlchemistGraph,
-    pub surface: FormulaSurface,
     pub surface_bindings: FormulaSurfaceBindings,
     pub overrides: FormulaOverrides,
+    pub managed_bindings: ManagedANodeBindings,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+impl AlchemistFormulaInstance {
+    pub fn require_compatible(&self, formula: &AlchemistFormula) -> Result<(), FormulaMaterializationError> {
+        if self.formula_ref.id != formula.id {
+            return Err(FormulaMaterializationError::FormulaIdMismatch {
+                expected: self.formula_ref.id.clone(),
+                actual: formula.id.clone(),
+            });
+        }
+        if self.formula_ref.version != formula.version {
+            return Err(FormulaMaterializationError::FormulaVersionMismatch {
+                expected: self.formula_ref.version,
+                actual: formula.version,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum FormulaMaterializationError {
+    #[error("formula instance references `{expected}`, but definition is `{actual}`")]
+    FormulaIdMismatch { expected: FormulaId, actual: FormulaId },
+    #[error("formula instance references version {expected}, but definition is version {actual}")]
+    FormulaVersionMismatch { expected: u32, actual: u32 },
+    #[error("formula instance override references unbound surface item `{0}`")]
+    MissingSurfaceBinding(SurfaceItemId),
+    #[error("formula surface binding targets missing ANode `{0}`")]
+    MissingTargetNode(ANodeId),
 }
