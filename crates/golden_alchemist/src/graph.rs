@@ -27,7 +27,7 @@ impl ANodeConfig {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ANodeUiState {
     pub position: [f64; 2],
-    pub width: Option<f64>,
+    pub size: Option<[f64; 2]>,
     pub collapsed: bool,
 }
 
@@ -35,7 +35,7 @@ impl Default for ANodeUiState {
     fn default() -> Self {
         Self {
             position: [0.0; 2],
-            width: None,
+            size: None,
             collapsed: false,
         }
     }
