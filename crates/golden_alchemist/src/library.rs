@@ -8,6 +8,7 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrimitiveNodeKind {
     Constant,
+    Property,
     Add,
     Compare,
     BoolAnd,
@@ -22,8 +23,9 @@ pub enum PrimitiveNodeKind {
 }
 
 impl PrimitiveNodeKind {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::Constant,
+        Self::Property,
         Self::Add,
         Self::Compare,
         Self::BoolAnd,
@@ -41,6 +43,7 @@ impl PrimitiveNodeKind {
     pub const fn type_name(self) -> &'static str {
         match self {
             Self::Constant => "constant",
+            Self::Property => "property",
             Self::Add => "add",
             Self::Compare => "compare",
             Self::BoolAnd => "bool_and",
@@ -80,6 +83,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
     fn label(&self) -> &'static str {
         match self.kind {
             PrimitiveNodeKind::Constant => "Constant",
+            PrimitiveNodeKind::Property => "Property",
             PrimitiveNodeKind::Add => "Add",
             PrimitiveNodeKind::Compare => "Compare",
             PrimitiveNodeKind::BoolAnd => "Boolean And",
@@ -96,7 +100,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
 
     fn category(&self) -> &'static str {
         match self.kind {
-            PrimitiveNodeKind::Constant => "Values",
+            PrimitiveNodeKind::Constant | PrimitiveNodeKind::Property => "Values",
             PrimitiveNodeKind::Add | PrimitiveNodeKind::MapRange | PrimitiveNodeKind::Clamp => "Math",
             PrimitiveNodeKind::Compare => "Logic",
             PrimitiveNodeKind::BoolAnd
@@ -128,13 +132,20 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                     .with_description("The constant value emitted by this node.")
                     .with_editor("runtime_value"),
             ],
+            PrimitiveNodeKind::Property => vec![
+                ANodeConfigFieldDecl::new("property_id", "Property ID", RuntimeValue::String("".into()))
+                    .with_description("Stable Formula property identifier."),
+                ANodeConfigFieldDecl::new("value", "Value", RuntimeValue::Float(0.0))
+                    .with_description("The property default or Processor override.")
+                    .with_editor("runtime_value"),
+            ],
             _ => Vec::new(),
         }
     }
 
     fn signature(&self, _ctx: &SignatureCtx<'_>, instance: &ANodeInstance, _bindings: &TypeBindings) -> ANodeSignature {
         match self.kind {
-            PrimitiveNodeKind::Constant => constant_signature(instance),
+            PrimitiveNodeKind::Constant | PrimitiveNodeKind::Property => constant_signature(instance),
             PrimitiveNodeKind::Add => generic_binary_signature("a", "b", "result"),
             PrimitiveNodeKind::Compare => compare_signature(),
             PrimitiveNodeKind::BoolAnd | PrimitiveNodeKind::BoolOr => boolean_binary_signature(),
@@ -175,7 +186,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
         _resolved: &ResolvedANodeSignature,
     ) -> Result<CompiledNodeOperation, Diagnostic> {
         Ok(match self.kind {
-            PrimitiveNodeKind::Constant => CompiledNodeOperation::Constant(
+            PrimitiveNodeKind::Constant | PrimitiveNodeKind::Property => CompiledNodeOperation::Constant(
                 instance
                     .config
                     .get("value")

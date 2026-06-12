@@ -57,7 +57,10 @@ pub enum SurfaceSource {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SurfaceItemKind {
     Parameter,
+    Condition,
+    Consequence,
     Input,
+    Filter,
     Output,
     Action,
 }
@@ -68,16 +71,17 @@ pub struct SurfaceItem {
     pub id: SurfaceItemId,
     pub label: String,
     pub description: Option<String>,
+    pub path: Vec<String>,
     pub kind: SurfaceItemKind,
     pub value_type: Option<ValueTypeSpec>,
     pub ui: ParamUiHints,
-    pub binding: Option<ANodeFieldPath>,
+    pub bindings: Vec<ANodeFieldPath>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FormulaSurfaceBindings {
-    pub bindings: IndexMap<SurfaceItemId, ANodeFieldPath>,
+    pub bindings: IndexMap<SurfaceItemId, Vec<ANodeFieldPath>>,
 }
 
 impl FormulaSurfaceBindings {
@@ -87,7 +91,8 @@ impl FormulaSurfaceBindings {
             .sections
             .iter()
             .flat_map(|section| &section.items)
-            .filter_map(|item| item.binding.clone().map(|binding| (item.id.clone(), binding)))
+            .filter(|item| !item.bindings.is_empty())
+            .map(|item| (item.id.clone(), item.bindings.clone()))
             .collect();
         Self { bindings }
     }
@@ -141,16 +146,18 @@ impl AlchemistFormula {
         instance.require_compatible(self)?;
         let mut graph = self.graph.clone();
         for (surface_item, value) in &instance.overrides.values {
-            let target = instance
+            let targets = instance
                 .surface_bindings
                 .bindings
                 .get(surface_item)
                 .ok_or_else(|| FormulaMaterializationError::MissingSurfaceBinding(surface_item.clone()))?;
-            let node = graph
-                .nodes
-                .get_mut(&target.node)
-                .ok_or(FormulaMaterializationError::MissingTargetNode(target.node))?;
-            node.config.set(target.field.clone(), value.clone());
+            for target in targets {
+                let node = graph
+                    .nodes
+                    .get_mut(&target.node)
+                    .ok_or(FormulaMaterializationError::MissingTargetNode(target.node))?;
+                node.config.set(target.field.clone(), value.clone());
+            }
         }
         Ok(graph)
     }
