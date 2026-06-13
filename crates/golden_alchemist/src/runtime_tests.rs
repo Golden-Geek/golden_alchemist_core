@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use crate::{
     ANodeInstance, ANodeTypeId, AlchemistGraph, AlchemistRuntime, CompileCtx, EvaluationCtx, InputSocketRef,
-    OutputSocketRef, RuntimeInputSnapshot, RuntimeRegistries, RuntimeValue, TriggerValue, ValueTypeRegistry,
-    compile_graph, primitive_node_registry,
+    InputValueSource, OutputSocketRef, RuntimeInputSnapshot, RuntimeRegistries, RuntimeValue, TriggerValue,
+    TypeBindingSource, TypeVar, ValueTypeId, ValueTypeRegistry, compile_graph, primitive_node_registry,
 };
 
 fn node(type_id: &str) -> ANodeInstance {
@@ -77,6 +77,49 @@ fn pure_math_graph_evaluates_in_compiled_order() {
 }
 
 #[test]
+fn forced_float_math_coerces_vec3_input_at_runtime() {
+    let mut graph = AlchemistGraph::new();
+    let source = graph.add_node(constant(RuntimeValue::Vec3([2.0, 4.0, 8.0]))).unwrap();
+    let mut add_node = node("add");
+    add_node.forced_type_bindings.insert(
+        TypeVar::new("TNumeric"),
+        ValueTypeId::new("float"),
+        TypeBindingSource::ForcedByUser,
+    );
+    let add = graph.add_node(add_node).unwrap();
+    graph
+        .connect(OutputSocketRef::new(source, "value"), InputSocketRef::new(add, "a"))
+        .unwrap();
+    let mut runtime = runtime(&graph);
+    let add_exec = runtime
+        .compiled
+        .debug_map
+        .exec_to_authored
+        .iter()
+        .position(|node| *node == add)
+        .map(|index| crate::ExecNodeId::new(index as u32))
+        .unwrap();
+    let add_inputs = &runtime.compiled.exec_nodes[add_exec.index()].inputs;
+    assert!(
+        matches!(
+            &add_inputs[0],
+            InputValueSource::Converted { target_type, .. } if *target_type == ValueTypeId::new("float")
+        ),
+        "{add_inputs:?}"
+    );
+
+    let output = evaluate(&mut runtime, 1);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(
+        output
+            .debug_samples
+            .iter()
+            .any(|sample| sample.exec_node == add_exec && sample.value == RuntimeValue::Float(2.0))
+    );
+}
+
+#[test]
 fn edge_trigger_fires_once_and_preserves_state() {
     let mut graph = AlchemistGraph::new();
     let source = graph.add_node(constant(RuntimeValue::Bool(true))).unwrap();
@@ -122,13 +165,13 @@ fn edge_trigger_fires_once_and_preserves_state() {
 #[test]
 fn runtime_diagnostics_propagate_node_failures() {
     let mut graph = AlchemistGraph::new();
-    graph.add_node(node("add")).unwrap();
+    graph.add_node(node("map_range")).unwrap();
     let mut runtime = runtime(&graph);
 
     let output = evaluate(&mut runtime, 1);
 
     assert_eq!(output.diagnostics.len(), 1);
-    assert!(output.diagnostics[0].message.contains("incompatible"));
+    assert!(output.diagnostics[0].message.contains("range cannot be zero"));
 }
 
 #[test]

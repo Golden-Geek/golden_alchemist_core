@@ -69,7 +69,7 @@ fn vec3_connection_reshapes_add_inputs_and_output() {
 }
 
 #[test]
-fn forced_float_rejects_vec3_connection() {
+fn forced_float_accepts_vec3_connection_with_coercion() {
     let mut graph = AlchemistGraph::new();
     let source = graph.add_node(constant(RuntimeValue::Vec3([1.0, 2.0, 3.0]))).unwrap();
     let mut add_node = ANodeInstance::new(ANodeTypeId::new("add"), "Add");
@@ -92,12 +92,17 @@ fn forced_float_rejects_vec3_connection() {
         &primitive_node_registry(),
     );
 
-    assert!(result.has_errors());
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "type_mismatch")
+    assert!(!result.has_errors(), "{:?}", result.diagnostics);
+    let signature = &result.graph.nodes[&add].signature;
+    for socket in ["a", "b"] {
+        assert_eq!(
+            signature.inputs[&crate::SocketId::new(socket)].value_type,
+            Some(ValueTypeId::new("float"))
+        );
+    }
+    assert_eq!(
+        signature.outputs[&crate::SocketId::new("result")].value_type,
+        Some(ValueTypeId::new("float"))
     );
 }
 

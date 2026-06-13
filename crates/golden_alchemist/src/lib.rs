@@ -50,7 +50,10 @@ pub use typing::{
     ResolvedANode, ResolvedANodeSignature, ResolvedGraph, ResolvedSocket, TypeBinding, TypeBindingConflict,
     TypeBindingSource, TypeBindings, TypeConstraint, TypeSolveCtx, TypeSolveResult, TypeVar, solve_types,
 };
-pub use value::{ColorValue, ExtensionValue, RuntimeValue, StableRef, TriggerValue, ValueStorageKind};
+pub use value::{
+    ColorValue, ExtensionValue, RuntimeValue, StableRef, TriggerValue, ValueComponent, ValueStorageKind,
+    component_value_type,
+};
 
 /// Current authored graph schema version.
 pub const ALCHEMIST_SCHEMA_VERSION: u32 = 1;

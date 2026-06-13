@@ -136,12 +136,22 @@ impl ValueTypeRegistry {
     #[must_use]
     pub fn can_convert_automatically(&self, from: &ValueTypeId, to: &ValueTypeId) -> bool {
         from == to
-            || self.get(from).is_some_and(|descriptor| {
-                descriptor
-                    .conversions
-                    .iter()
-                    .any(|rule| &rule.target == to && matches!(rule.kind, ConversionKind::NonLossy))
-            })
+            || self
+                .get(from)
+                .is_some_and(|descriptor| descriptor.conversions.iter().any(|rule| &rule.target == to))
+    }
+
+    #[must_use]
+    pub fn default_value(&self, id: &ValueTypeId) -> Option<RuntimeValue> {
+        self.get(id).map(|descriptor| (descriptor.default_value)())
+    }
+
+    pub fn convert_automatically(&self, value: &RuntimeValue, target: &ValueTypeId) -> Result<RuntimeValue, String> {
+        let source = value.value_type();
+        if !self.can_convert_automatically(&source, target) {
+            return Err(format!("cannot convert `{source}` to `{target}`"));
+        }
+        value.convert_to(target)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &ValueTypeDescriptor> {
@@ -208,49 +218,93 @@ fn primitive_descriptors() -> Vec<ValueTypeDescriptor> {
             "Boolean",
             ValueStorageKind::InlineBool,
             || RuntimeValue::Bool(false),
-        ),
+        )
+        .with_conversion(ValueTypeId::new("int"), ConversionKind::NonLossy)
+        .with_conversion(ValueTypeId::new("float"), ConversionKind::NonLossy)
+        .with_conversion(ValueTypeId::new("string"), ConversionKind::NonLossy),
         ValueTypeDescriptor::new(
             ValueTypeId::new("trigger"),
             "Trigger",
             ValueStorageKind::Trigger,
             || RuntimeValue::Trigger(TriggerValue::default()),
-        ),
+        )
+        .with_conversion(ValueTypeId::new("bool"), ConversionKind::NonLossy)
+        .with_conversion(ValueTypeId::new("string"), ConversionKind::NonLossy),
         ValueTypeDescriptor::new(ValueTypeId::new("int"), "Integer", ValueStorageKind::InlineI64, || {
             RuntimeValue::Int(0)
         })
-        .with_conversion(ValueTypeId::new("float"), ConversionKind::NonLossy),
+        .with_conversion(ValueTypeId::new("bool"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("float"), ConversionKind::NonLossy)
+        .with_conversion(ValueTypeId::new("string"), ConversionKind::NonLossy)
+        .with_conversion(ValueTypeId::new("vec2"), ConversionKind::ScalarBroadcast)
+        .with_conversion(ValueTypeId::new("vec3"), ConversionKind::ScalarBroadcast)
+        .with_conversion(ValueTypeId::new("color"), ConversionKind::ScalarBroadcast)
+        .with_conversion(ValueTypeId::new("duration"), ConversionKind::Lossy),
         ValueTypeDescriptor::new(ValueTypeId::new("float"), "Float", ValueStorageKind::InlineF64, || {
             RuntimeValue::Float(0.0)
-        }),
+        })
+        .with_conversion(ValueTypeId::new("bool"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("int"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("string"), ConversionKind::NonLossy)
+        .with_conversion(ValueTypeId::new("vec2"), ConversionKind::ScalarBroadcast)
+        .with_conversion(ValueTypeId::new("vec3"), ConversionKind::ScalarBroadcast)
+        .with_conversion(ValueTypeId::new("color"), ConversionKind::ScalarBroadcast)
+        .with_conversion(ValueTypeId::new("duration"), ConversionKind::Lossy),
         ValueTypeDescriptor::new(
             ValueTypeId::new("string"),
             "String",
             ValueStorageKind::SharedString,
             || RuntimeValue::String(Arc::from("")),
-        ),
+        )
+        .with_conversion(ValueTypeId::new("bool"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("int"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("float"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("vec2"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("vec3"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("color"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("duration"), ConversionKind::Lossy),
         ValueTypeDescriptor::new(
             ValueTypeId::new("vec2"),
             "Vector 2",
             ValueStorageKind::InlineVec2,
             || RuntimeValue::Vec2([0.0; 2]),
-        ),
+        )
+        .with_conversion(ValueTypeId::new("bool"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("float"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("string"), ConversionKind::NonLossy)
+        .with_conversion(ValueTypeId::new("vec3"), ConversionKind::NonLossy)
+        .with_conversion(ValueTypeId::new("color"), ConversionKind::NonLossy),
         ValueTypeDescriptor::new(
             ValueTypeId::new("vec3"),
             "Vector 3",
             ValueStorageKind::InlineVec3,
             || RuntimeValue::Vec3([0.0; 3]),
-        ),
+        )
+        .with_conversion(ValueTypeId::new("bool"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("float"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("string"), ConversionKind::NonLossy)
+        .with_conversion(ValueTypeId::new("vec2"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("color"), ConversionKind::NonLossy),
         ValueTypeDescriptor::new(
             ValueTypeId::new("color"),
             "Color",
             ValueStorageKind::InlineColor,
             || RuntimeValue::Color(ColorValue::BLACK),
-        ),
+        )
+        .with_conversion(ValueTypeId::new("bool"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("float"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("string"), ConversionKind::NonLossy)
+        .with_conversion(ValueTypeId::new("vec2"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("vec3"), ConversionKind::Lossy),
         ValueTypeDescriptor::new(
             ValueTypeId::new("duration"),
             "Duration",
             ValueStorageKind::Duration,
             || RuntimeValue::Duration(std::time::Duration::ZERO),
-        ),
+        )
+        .with_conversion(ValueTypeId::new("bool"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("int"), ConversionKind::Lossy)
+        .with_conversion(ValueTypeId::new("float"), ConversionKind::NonLossy)
+        .with_conversion(ValueTypeId::new("string"), ConversionKind::NonLossy),
     ]
 }

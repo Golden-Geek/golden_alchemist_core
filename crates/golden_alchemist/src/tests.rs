@@ -15,7 +15,8 @@ fn primitive_value_types_are_registered() {
         assert!(registry.contains(&ValueTypeId::new(id)), "{id} is missing");
     }
     assert!(registry.can_convert_automatically(&ValueTypeId::new("int"), &ValueTypeId::new("float")));
-    assert!(!registry.can_convert_automatically(&ValueTypeId::new("float"), &ValueTypeId::new("int")));
+    assert!(registry.can_convert_automatically(&ValueTypeId::new("float"), &ValueTypeId::new("int")));
+    assert!(registry.can_convert_automatically(&ValueTypeId::new("string"), &ValueTypeId::new("bool")));
 }
 
 #[test]
@@ -56,7 +57,7 @@ fn facet_compatibility_is_descriptor_driven() {
         .unwrap();
 
     assert!(registry.supports_facet(&module_id, &command_target));
-    assert!(!registry.can_convert_automatically(&module_id, &ValueTypeId::new("string")));
+    assert!(registry.can_convert_automatically(&module_id, &ValueTypeId::new("string")));
 }
 
 #[test]

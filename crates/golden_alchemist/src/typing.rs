@@ -5,7 +5,8 @@ use smol_str::SmolStr;
 
 use crate::{
     AEdge, ANodeId, ANodeRegistry, AlchemistGraph, Diagnostic, DiagnosticOrigin, DiagnosticSeverity, ExecutionKind,
-    FacetId, InputSocketDecl, OutputSocketDecl, SignatureCtx, SocketId, ValueTypeId, ValueTypeRegistry,
+    FacetId, InputSocketDecl, OutputSocketDecl, SignatureCtx, SocketId, ValueComponent, ValueTypeId, ValueTypeRegistry,
+    component_value_type,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -490,23 +491,27 @@ fn is_numeric(value_type: &ValueTypeId) -> bool {
 }
 
 fn output_constraint(working: &IndexMap<ANodeId, WorkingNode>, edge: &AEdge) -> Option<TypeConstraint> {
-    working
-        .get(&edge.from.node)?
-        .signature
-        .outputs
-        .iter()
-        .find(|socket| socket.id == edge.from.socket)
-        .map(|socket| socket.constraint.clone())
+    let node = working.get(&edge.from.node)?;
+    let (socket_id, component) = split_socket_component(&edge.from.socket);
+    let socket = node.signature.outputs.iter().find(|socket| socket.id == socket_id)?;
+    component
+        .map(|component| {
+            let value_type = resolve_constraint(&socket.constraint, &node.bindings, None)?;
+            component_value_type(&value_type, component).map(TypeConstraint::Exact)
+        })
+        .unwrap_or_else(|| Some(socket.constraint.clone()))
 }
 
 fn input_constraint(working: &IndexMap<ANodeId, WorkingNode>, edge: &AEdge) -> Option<TypeConstraint> {
-    working
-        .get(&edge.to.node)?
-        .signature
-        .inputs
-        .iter()
-        .find(|socket| socket.id == edge.to.socket)
-        .map(|socket| socket.constraint.clone())
+    let node = working.get(&edge.to.node)?;
+    let (socket_id, component) = split_socket_component(&edge.to.socket);
+    let socket = node.signature.inputs.iter().find(|socket| socket.id == socket_id)?;
+    component
+        .map(|component| {
+            let value_type = resolve_constraint(&socket.constraint, &node.bindings, None)?;
+            component_value_type(&value_type, component).map(TypeConstraint::Exact)
+        })
+        .unwrap_or_else(|| Some(socket.constraint.clone()))
 }
 
 fn resolve_constraint(
@@ -599,4 +604,14 @@ impl SocketKey {
             direction: SocketDirection::Output,
         }
     }
+}
+
+fn split_socket_component(socket: &SocketId) -> (SocketId, Option<ValueComponent>) {
+    let Some((base, component)) = socket.as_str().rsplit_once('.') else {
+        return (socket.clone(), None);
+    };
+    let Some(component) = ValueComponent::parse(component) else {
+        return (socket.clone(), None);
+    };
+    (SocketId::new(base), Some(component))
 }

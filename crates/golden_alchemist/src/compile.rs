@@ -4,13 +4,26 @@ use indexmap::IndexMap;
 
 use crate::{
     ANodeId, ANodeRegistry, AlchemistGraph, CompiledNodeEvaluator, Diagnostic, DiagnosticOrigin, DiagnosticSeverity,
-    ExecNodeId, ExecutionKind, ExposedSurface, RuntimeValue, SocketId, TypeSolveCtx, ValueSlotId, ValueTypeRegistry,
-    solve_types,
+    ExecNodeId, ExecutionKind, ExposedSurface, RuntimeValue, SocketId, TypeSolveCtx, ValueComponent, ValueSlotId,
+    ValueTypeId, ValueTypeRegistry, component_value_type, solve_types,
 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputValueSource {
     Slot(ValueSlotId),
+    Converted {
+        source: Box<InputValueSource>,
+        target_type: ValueTypeId,
+    },
+    Component {
+        source: Box<InputValueSource>,
+        component: ValueComponent,
+    },
+    Composite {
+        target_type: ValueTypeId,
+        base: Box<InputValueSource>,
+        components: Vec<(ValueComponent, InputValueSource)>,
+    },
     Constant(RuntimeValue),
     Unset,
 }
@@ -159,16 +172,18 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         let inputs = resolved
             .signature
             .inputs
-            .keys()
-            .map(|socket| {
-                graph
-                    .edges
-                    .iter()
-                    .find(|edge| edge.to.node == *node_id && edge.to.socket == *socket)
-                    .and_then(|edge| value_slots.get(&(edge.from.node, edge.from.socket.clone())).copied())
-                    .map(InputValueSource::Slot)
-                    .or_else(|| input_default(instance, socket, ctx).map(InputValueSource::Constant))
-                    .unwrap_or(InputValueSource::Unset)
+            .iter()
+            .map(|(socket, resolved_socket)| {
+                input_source(
+                    graph,
+                    &solved.graph,
+                    &value_slots,
+                    instance,
+                    *node_id,
+                    socket,
+                    resolved_socket.value_type.as_ref(),
+                    ctx,
+                )
             })
             .collect();
         let outputs = resolved
@@ -224,6 +239,104 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         })),
         diagnostics,
     }
+}
+
+fn input_source(
+    graph: &AlchemistGraph,
+    solved: &crate::ResolvedGraph,
+    value_slots: &IndexMap<(ANodeId, SocketId), ValueSlotId>,
+    instance: &crate::ANodeInstance,
+    node_id: ANodeId,
+    socket: &SocketId,
+    target_type: Option<&ValueTypeId>,
+    ctx: &CompileCtx<'_>,
+) -> InputValueSource {
+    let base_edge = graph
+        .edges
+        .iter()
+        .find(|edge| edge.to.node == node_id && edge.to.socket == *socket);
+    let component_edges = graph.edges.iter().filter_map(|edge| {
+        if edge.to.node != node_id {
+            return None;
+        }
+        let (base, component) = split_socket_component(&edge.to.socket);
+        (base == *socket)
+            .then_some(component?)
+            .map(|component| (component, edge))
+    });
+
+    let base = base_edge
+        .and_then(|edge| edge_input_source(edge, target_type, solved, value_slots))
+        .or_else(|| input_default(instance, socket, ctx).map(InputValueSource::Constant))
+        .or_else(|| {
+            target_type.and_then(|value_type| {
+                ctx.value_types
+                    .default_value(value_type)
+                    .map(InputValueSource::Constant)
+            })
+        });
+
+    let components = component_edges
+        .filter_map(|(component, edge)| {
+            let component_type = target_type.and_then(|target| component_value_type(target, component))?;
+            edge_input_source(edge, Some(&component_type), solved, value_slots).map(|source| (component, source))
+        })
+        .collect::<Vec<_>>();
+
+    if components.is_empty() {
+        return base.unwrap_or(InputValueSource::Unset);
+    }
+
+    let Some(target_type) = target_type else {
+        return base.unwrap_or(InputValueSource::Unset);
+    };
+    let base = base
+        .or_else(|| {
+            ctx.value_types
+                .default_value(target_type)
+                .map(InputValueSource::Constant)
+        })
+        .unwrap_or(InputValueSource::Unset);
+    InputValueSource::Composite {
+        target_type: target_type.clone(),
+        base: Box::new(base),
+        components,
+    }
+}
+
+fn edge_input_source(
+    edge: &crate::AEdge,
+    target_type: Option<&ValueTypeId>,
+    solved: &crate::ResolvedGraph,
+    value_slots: &IndexMap<(ANodeId, SocketId), ValueSlotId>,
+) -> Option<InputValueSource> {
+    let (source_socket, source_component) = split_socket_component(&edge.from.socket);
+    let slot = value_slots.get(&(edge.from.node, source_socket.clone())).copied()?;
+    let mut source = InputValueSource::Slot(slot);
+    let mut source_type = solved
+        .nodes
+        .get(&edge.from.node)?
+        .signature
+        .outputs
+        .get(&source_socket)?
+        .value_type
+        .clone();
+    if let Some(component) = source_component {
+        source = InputValueSource::Component {
+            source: Box::new(source),
+            component,
+        };
+        source_type = source_type.and_then(|value_type| component_value_type(&value_type, component));
+    }
+    if let (Some(source_type), Some(target_type)) = (source_type, target_type)
+        && source_type != *target_type
+    {
+        source = InputValueSource::Converted {
+            source: Box::new(source),
+            target_type: target_type.clone(),
+        };
+    }
+    Some(source)
 }
 
 fn input_default(instance: &crate::ANodeInstance, socket: &SocketId, ctx: &CompileCtx<'_>) -> Option<RuntimeValue> {
@@ -336,4 +449,14 @@ fn has_errors(diagnostics: &[Diagnostic]) -> bool {
     diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+}
+
+fn split_socket_component(socket: &SocketId) -> (SocketId, Option<ValueComponent>) {
+    let Some((base, component)) = socket.as_str().rsplit_once('.') else {
+        return (socket.clone(), None);
+    };
+    let Some(component) = ValueComponent::parse(component) else {
+        return (socket.clone(), None);
+    };
+    (SocketId::new(base), Some(component))
 }

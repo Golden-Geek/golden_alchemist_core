@@ -1,8 +1,8 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
 
 use crate::{
-    CompiledAlchemistGraph, CompiledNodeOperation, ExecNodeId, InputValueSource, RuntimeValue, StableRef, TriggerValue,
-    ValueSlotId, ValueTypeRegistry,
+    ColorValue, CompiledAlchemistGraph, CompiledNodeOperation, ExecNodeId, InputValueSource, RuntimeValue, StableRef,
+    TriggerValue, ValueSlotId, ValueTypeRegistry,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -135,15 +135,22 @@ impl AlchemistRuntime {
         let mut output = RuntimeOutput::default();
         for exec_id in &self.compiled.topo_order {
             let node = &self.compiled.exec_nodes[exec_id.index()];
-            let inputs: Vec<RuntimeValue> = node
+            let inputs = node
                 .inputs
                 .iter()
-                .map(|source| match source {
-                    InputValueSource::Slot(slot) => self.memory.values[slot.index()].clone(),
-                    InputValueSource::Constant(value) => value.clone(),
-                    InputValueSource::Unset => RuntimeValue::Unit,
-                })
-                .collect();
+                .map(|source| runtime_input_value(source, &self.memory, ctx.registries.value_types))
+                .collect::<Result<Vec<_>, _>>();
+            let inputs = match inputs {
+                Ok(inputs) => inputs,
+                Err(message) => {
+                    output.diagnostics.push(RuntimeDiagnostic {
+                        exec_node: *exec_id,
+                        message,
+                    });
+                    self.execution_counts[exec_id.index()] += 1;
+                    continue;
+                }
+            };
             let state = &mut self.memory.states[node.state_range.clone()];
             let result = evaluate_operation(
                 &node.operation,
@@ -189,6 +196,41 @@ impl AlchemistRuntime {
     #[must_use]
     pub fn execution_count(&self, exec_node: ExecNodeId) -> u64 {
         self.execution_counts[exec_node.index()]
+    }
+}
+
+fn runtime_input_value(
+    source: &InputValueSource,
+    memory: &AlchemistMemory,
+    value_types: &ValueTypeRegistry,
+) -> Result<RuntimeValue, String> {
+    match source {
+        InputValueSource::Slot(slot) => Ok(memory.values[slot.index()].clone()),
+        InputValueSource::Converted { source, target_type } => {
+            let value = runtime_input_value(source, memory, value_types)?;
+            value_types.convert_automatically(&value, target_type)
+        }
+        InputValueSource::Component { source, component } => {
+            let value = runtime_input_value(source, memory, value_types)?;
+            value
+                .component(*component)
+                .ok_or_else(|| format!("value type `{}` has no component `{component:?}`", value.value_type()))
+        }
+        InputValueSource::Composite {
+            target_type,
+            base,
+            components,
+        } => {
+            let base = runtime_input_value(base, memory, value_types)?;
+            let mut value = value_types.convert_automatically(&base, target_type)?;
+            for (component, source) in components {
+                let component_value = runtime_input_value(source, memory, value_types)?;
+                value = value.with_component(*component, &component_value)?;
+            }
+            Ok(value)
+        }
+        InputValueSource::Constant(value) => Ok(value.clone()),
+        InputValueSource::Unset => Ok(RuntimeValue::Unit),
     }
 }
 
@@ -243,19 +285,8 @@ fn evaluate_operation(
                 ..*trigger
             })])
         }
-        CompiledNodeOperation::MapRange => {
-            let values = float_inputs::<5>(evaluation.inputs)?;
-            let [value, in_min, in_max, out_min, out_max] = values;
-            if (in_max - in_min).abs() <= f64::EPSILON {
-                return Err("Map Range input range cannot be zero".into());
-            }
-            let normalized = (value - in_min) / (in_max - in_min);
-            Ok(vec![RuntimeValue::Float(out_min + normalized * (out_max - out_min))])
-        }
-        CompiledNodeOperation::Clamp => {
-            let [value, minimum, maximum] = float_inputs::<3>(evaluation.inputs)?;
-            Ok(vec![RuntimeValue::Float(value.clamp(minimum, maximum))])
-        }
+        CompiledNodeOperation::MapRange => Ok(vec![map_range_values(evaluation.inputs)?]),
+        CompiledNodeOperation::Clamp => Ok(vec![clamp_values(evaluation.inputs)?]),
         CompiledNodeOperation::DelayOneTick => {
             let [value] = require_inputs::<1>(evaluation.inputs)?;
             if let Some(state) = evaluation.state.first_mut() {
@@ -297,19 +328,6 @@ fn bool_inputs<const N: usize>(inputs: &[RuntimeValue]) -> Result<[bool; N], Str
         .map_err(|_| "invalid boolean input count".into())
 }
 
-fn float_inputs<const N: usize>(inputs: &[RuntimeValue]) -> Result<[f64; N], String> {
-    require_inputs::<N>(inputs)?
-        .map(|value| match value {
-            RuntimeValue::Float(value) => Ok(*value),
-            RuntimeValue::Int(value) => Ok(*value as f64),
-            _ => Err("node expects numeric scalar inputs".into()),
-        })
-        .into_iter()
-        .collect::<Result<Vec<_>, String>>()?
-        .try_into()
-        .map_err(|_| "invalid numeric input count".into())
-}
-
 fn add_values(left: &RuntimeValue, right: &RuntimeValue) -> Result<RuntimeValue, String> {
     match (left, right) {
         (RuntimeValue::Int(left), RuntimeValue::Int(right)) => Ok(RuntimeValue::Int(left + right)),
@@ -324,6 +342,100 @@ fn add_values(left: &RuntimeValue, right: &RuntimeValue) -> Result<RuntimeValue,
             left[1] + right[1],
             left[2] + right[2],
         ])),
+        (RuntimeValue::Color(left), RuntimeValue::Color(right)) => Ok(RuntimeValue::Color(ColorValue {
+            red: left.red + right.red,
+            green: left.green + right.green,
+            blue: left.blue + right.blue,
+            alpha: left.alpha + right.alpha,
+        })),
         _ => Err("Add received incompatible runtime values".into()),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NumericShape {
+    Int,
+    Scalar,
+    Vec2,
+    Vec3,
+    Color,
+}
+
+fn numeric_components(value: &RuntimeValue) -> Result<(NumericShape, Vec<f64>), String> {
+    match value {
+        RuntimeValue::Int(value) => Ok((NumericShape::Int, vec![*value as f64])),
+        RuntimeValue::Float(value) => Ok((NumericShape::Scalar, vec![*value])),
+        RuntimeValue::Vec2(value) => Ok((NumericShape::Vec2, value.to_vec())),
+        RuntimeValue::Vec3(value) => Ok((NumericShape::Vec3, value.to_vec())),
+        RuntimeValue::Color(value) => Ok((
+            NumericShape::Color,
+            vec![
+                f64::from(value.red),
+                f64::from(value.green),
+                f64::from(value.blue),
+                f64::from(value.alpha),
+            ],
+        )),
+        _ => Err("node expects numeric inputs".into()),
+    }
+}
+
+fn numeric_from_components(shape: NumericShape, components: &[f64]) -> RuntimeValue {
+    match shape {
+        NumericShape::Int => RuntimeValue::Int(components[0] as i64),
+        NumericShape::Scalar => RuntimeValue::Float(components[0]),
+        NumericShape::Vec2 => RuntimeValue::Vec2([components[0], components[1]]),
+        NumericShape::Vec3 => RuntimeValue::Vec3([components[0], components[1], components[2]]),
+        NumericShape::Color => RuntimeValue::Color(ColorValue {
+            red: components[0] as f32,
+            green: components[1] as f32,
+            blue: components[2] as f32,
+            alpha: components[3] as f32,
+        }),
+    }
+}
+
+fn aligned_numeric_components(values: &[RuntimeValue]) -> Result<(NumericShape, Vec<Vec<f64>>), String> {
+    let mut components = values.iter().map(numeric_components).collect::<Result<Vec<_>, _>>()?;
+    let Some((shape, first)) = components.first() else {
+        return Err("node expects numeric inputs".into());
+    };
+    let shape = *shape;
+    let count = first.len();
+    if components
+        .iter()
+        .any(|(candidate_shape, values)| *candidate_shape != shape || values.len() != count)
+    {
+        return Err("node received incompatible numeric shapes".into());
+    }
+    Ok((shape, components.drain(..).map(|(_, components)| components).collect()))
+}
+
+fn map_range_values(inputs: &[RuntimeValue]) -> Result<RuntimeValue, String> {
+    let values = require_inputs::<5>(inputs)?.map(Clone::clone);
+    let (shape, values) = aligned_numeric_components(&values)?;
+    let [value, in_min, in_max, out_min, out_max] = values
+        .try_into()
+        .map_err(|_| "invalid Map Range input count".to_string())?;
+    let mut result = Vec::with_capacity(value.len());
+    for index in 0..value.len() {
+        if (in_max[index] - in_min[index]).abs() <= f64::EPSILON {
+            return Err("Map Range input range cannot be zero".into());
+        }
+        let normalized = (value[index] - in_min[index]) / (in_max[index] - in_min[index]);
+        result.push(out_min[index] + normalized * (out_max[index] - out_min[index]));
+    }
+    Ok(numeric_from_components(shape, &result))
+}
+
+fn clamp_values(inputs: &[RuntimeValue]) -> Result<RuntimeValue, String> {
+    let values = require_inputs::<3>(inputs)?.map(Clone::clone);
+    let (shape, values) = aligned_numeric_components(&values)?;
+    let [value, minimum, maximum] = values.try_into().map_err(|_| "invalid Clamp input count".to_string())?;
+    let result = value
+        .iter()
+        .zip(minimum.iter().zip(maximum.iter()))
+        .map(|(value, (minimum, maximum))| value.clamp(*minimum, *maximum))
+        .collect::<Vec<_>>();
+    Ok(numeric_from_components(shape, &result))
 }

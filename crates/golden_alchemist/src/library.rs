@@ -139,6 +139,9 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                     .with_description("The property default or Processor override.")
                     .with_editor("runtime_value"),
             ],
+            PrimitiveNodeKind::Add | PrimitiveNodeKind::MapRange | PrimitiveNodeKind::Clamp => {
+                vec![value_type_config_field("TNumeric")]
+            }
             _ => Vec::new(),
         }
     }
@@ -168,9 +171,9 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                 ..ANodeSignature::default()
             },
             PrimitiveNodeKind::MapRange => {
-                float_signature(&["value", "in_min", "in_max", "out_min", "out_max"], "result")
+                generic_numeric_signature(&["value", "in_min", "in_max", "out_min", "out_max"], "result")
             }
-            PrimitiveNodeKind::Clamp => float_signature(&["value", "minimum", "maximum"], "result"),
+            PrimitiveNodeKind::Clamp => generic_numeric_signature(&["value", "minimum", "maximum"], "result"),
             PrimitiveNodeKind::DelayOneTick => passthrough_signature(),
             PrimitiveNodeKind::DebugLog => ANodeSignature {
                 inputs: vec![InputSocketDecl::new("value", "Value", TypeConstraint::Any)],
@@ -243,16 +246,20 @@ fn constant_signature(instance: &ANodeInstance) -> ANodeSignature {
 }
 
 fn generic_binary_signature(first: &str, second: &str, output: &str) -> ANodeSignature {
+    generic_numeric_signature(&[first, second], output)
+}
+
+fn generic_numeric_signature(inputs: &[&str], output: &str) -> ANodeSignature {
     let variable = TypeVar::new("TNumeric");
     let mut default_bindings = TypeBindings::default();
     let mut generic_constraints = indexmap::IndexMap::new();
     default_bindings.insert(variable.clone(), ValueTypeId::new("float"), TypeBindingSource::Default);
     generic_constraints.insert(variable.clone(), TypeConstraint::NumericLike);
     ANodeSignature {
-        inputs: vec![
-            InputSocketDecl::new(first, title(first), TypeConstraint::Generic(variable.clone())),
-            InputSocketDecl::new(second, title(second), TypeConstraint::Generic(variable.clone())),
-        ],
+        inputs: inputs
+            .iter()
+            .map(|id| InputSocketDecl::new(*id, title(id), TypeConstraint::Generic(variable.clone())))
+            .collect(),
         outputs: vec![OutputSocketDecl::new(
             output,
             title(output),
@@ -286,17 +293,6 @@ fn boolean_binary_signature() -> ANodeSignature {
     }
 }
 
-fn float_signature(inputs: &[&str], output: &str) -> ANodeSignature {
-    ANodeSignature {
-        inputs: inputs
-            .iter()
-            .map(|id| InputSocketDecl::new(*id, title(id), exact("float")))
-            .collect(),
-        outputs: vec![OutputSocketDecl::new(output, title(output), exact("float"))],
-        ..ANodeSignature::default()
-    }
-}
-
 fn passthrough_signature() -> ANodeSignature {
     let variable = TypeVar::new("TValue");
     let mut default_bindings = TypeBindings::default();
@@ -315,6 +311,13 @@ fn passthrough_signature() -> ANodeSignature {
         default_bindings,
         ..ANodeSignature::default()
     }
+}
+
+fn value_type_config_field(variable: &str) -> ANodeConfigFieldDecl {
+    ANodeConfigFieldDecl::new("value_type", "Value Type", RuntimeValue::String("float".into()))
+        .with_description("Optional fixed value type for this node. Disable to infer from inputs.")
+        .with_editor("value_type")
+        .with_type_variable(variable)
 }
 
 fn title(id: &str) -> String {

@@ -81,6 +81,7 @@ pub struct ANodeConfigFieldDecl {
     pub label: String,
     pub description: Option<String>,
     pub editor: Option<String>,
+    pub type_variable: Option<TypeVar>,
     pub default_value: RuntimeValue,
 }
 
@@ -92,6 +93,7 @@ impl ANodeConfigFieldDecl {
             label: label.into(),
             description: None,
             editor: None,
+            type_variable: None,
             default_value,
         }
     }
@@ -105,6 +107,12 @@ impl ANodeConfigFieldDecl {
     #[must_use]
     pub fn with_editor(mut self, editor: impl Into<String>) -> Self {
         self.editor = Some(editor.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_type_variable(mut self, variable: impl Into<TypeVar>) -> Self {
+        self.type_variable = Some(variable.into());
         self
     }
 }
