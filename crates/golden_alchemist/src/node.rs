@@ -3,7 +3,7 @@ use smol_str::SmolStr;
 
 use crate::{
     ANodeInstance, ANodeTypeId, CompiledNodeOperation, Diagnostic, DiagnosticOrigin, ResolvedANodeSignature,
-    RuntimeValue, SocketId, TypeBindings, TypeConstraint, TypeVar, ValueTypeRegistry,
+    RuntimeValue, SocketId, TypeBindings, TypeConstraint, TypeVar, ValueStorageKind, ValueTypeId, ValueTypeRegistry,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +82,7 @@ pub struct ANodeConfigFieldDecl {
     pub description: Option<String>,
     pub editor: Option<String>,
     pub type_variable: Option<TypeVar>,
+    pub type_options: Vec<ValueTypeId>,
     pub default_value: RuntimeValue,
 }
 
@@ -94,6 +95,7 @@ impl ANodeConfigFieldDecl {
             description: None,
             editor: None,
             type_variable: None,
+            type_options: Vec::new(),
             default_value,
         }
     }
@@ -114,6 +116,31 @@ impl ANodeConfigFieldDecl {
     pub fn with_type_variable(mut self, variable: impl Into<TypeVar>) -> Self {
         self.type_variable = Some(variable.into());
         self
+    }
+
+    #[must_use]
+    pub fn with_type_options(mut self, options: impl IntoIterator<Item = ValueTypeId>) -> Self {
+        self.type_options = options.into_iter().collect();
+        self
+    }
+
+    #[must_use]
+    pub fn resolved_type_options(&self, signature: &ANodeSignature, registry: &ValueTypeRegistry) -> Vec<ValueTypeId> {
+        if !self.type_options.is_empty() {
+            return self.type_options.clone();
+        }
+        let constraint = self
+            .type_variable
+            .as_ref()
+            .and_then(|variable| signature.generic_constraints.get(variable));
+        registry
+            .iter()
+            .filter(|descriptor| !matches!(descriptor.storage, ValueStorageKind::Extension))
+            .filter(|descriptor| {
+                constraint.is_none_or(|constraint| constraint.accepts_value_type(&descriptor.id, registry))
+            })
+            .map(|descriptor| descriptor.id.clone())
+            .collect()
     }
 }
 

@@ -137,6 +137,13 @@ pub enum TypeConstraint {
     OneOf(Vec<TypeConstraint>),
 }
 
+impl TypeConstraint {
+    #[must_use]
+    pub fn accepts_value_type(&self, value_type: &ValueTypeId, registry: &ValueTypeRegistry) -> bool {
+        constraint_accepts(self, value_type, registry)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedSocket {
     pub id: SocketId,

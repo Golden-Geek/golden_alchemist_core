@@ -1,8 +1,8 @@
 use crate::{
     ANodeDeclaration, ANodeInstance, ANodeRegistry, ANodeSignature, ANodeTypeId, AlchemistGraph, ExecutionKind,
-    FacetId, InputSocketDecl, OutputSocketDecl, RuntimeValue, SignatureCtx, StableRef, TypeBindingSource, TypeBindings,
-    TypeConstraint, TypeSolveCtx, TypeVar, ValueStorageKind, ValueTypeDescriptor, ValueTypeId, ValueTypeRegistry,
-    primitive_node_registry, solve_types,
+    FacetId, InputSocketDecl, OutputSocketDecl, RuntimeValue, SignatureCtx, StableRef, TriggerValue, TypeBindingSource,
+    TypeBindings, TypeConstraint, TypeSolveCtx, TypeVar, ValueStorageKind, ValueTypeDescriptor, ValueTypeId,
+    ValueTypeRegistry, primitive_node_registry, solve_types,
 };
 
 fn solve(graph: &AlchemistGraph, value_types: &ValueTypeRegistry, nodes: &ANodeRegistry) -> crate::TypeSolveResult {
@@ -13,6 +13,70 @@ fn constant(value: RuntimeValue) -> ANodeInstance {
     let mut node = ANodeInstance::new(ANodeTypeId::new("constant"), "Constant");
     node.config.set("value", value);
     node
+}
+
+#[derive(Clone, Copy)]
+struct NodeSocketSpec {
+    type_id: &'static str,
+    source_input: &'static str,
+    inputs: &'static [&'static str],
+    outputs: &'static [&'static str],
+}
+
+fn numeric_value_types() -> &'static [&'static str] {
+    &["int", "float", "vec2", "vec3", "color"]
+}
+
+fn primitive_value_types() -> &'static [&'static str] {
+    &[
+        "unit", "bool", "trigger", "int", "float", "string", "vec2", "vec3", "color", "duration",
+    ]
+}
+
+fn runtime_value(value_type: &str) -> RuntimeValue {
+    match value_type {
+        "unit" => RuntimeValue::Unit,
+        "bool" => RuntimeValue::Bool(true),
+        "trigger" => RuntimeValue::Trigger(TriggerValue::default()),
+        "int" => RuntimeValue::Int(1),
+        "float" => RuntimeValue::Float(1.0),
+        "string" => RuntimeValue::String("1".into()),
+        "vec2" => RuntimeValue::Vec2([1.0, 2.0]),
+        "vec3" => RuntimeValue::Vec3([1.0, 2.0, 3.0]),
+        "color" => RuntimeValue::Color(crate::ColorValue {
+            red: 1.0,
+            green: 0.5,
+            blue: 0.25,
+            alpha: 1.0,
+        }),
+        "duration" => RuntimeValue::Duration(std::time::Duration::from_secs(1)),
+        _ => panic!("unsupported test value type `{value_type}`"),
+    }
+}
+
+fn assert_resolved_socket_types(
+    result: &crate::TypeSolveResult,
+    node: crate::ANodeId,
+    inputs: &[&str],
+    outputs: &[&str],
+    expected_type: &str,
+) {
+    let signature = &result.graph.nodes[&node].signature;
+    let expected = Some(ValueTypeId::new(expected_type));
+    for input in inputs {
+        assert_eq!(
+            signature.inputs[&crate::SocketId::new(*input)].value_type,
+            expected,
+            "input `{input}` should resolve to `{expected_type}`"
+        );
+    }
+    for output in outputs {
+        assert_eq!(
+            signature.outputs[&crate::SocketId::new(*output)].value_type,
+            expected,
+            "output `{output}` should resolve to `{expected_type}`"
+        );
+    }
 }
 
 #[test]
@@ -66,6 +130,98 @@ fn vec3_connection_reshapes_add_inputs_and_output() {
         signature.outputs[&crate::SocketId::new("result")].value_type,
         Some(ValueTypeId::new("vec3"))
     );
+}
+
+#[test]
+fn numeric_generic_nodes_infer_each_supported_connected_type() {
+    let specs = [
+        NodeSocketSpec {
+            type_id: "add",
+            source_input: "a",
+            inputs: &["a", "b"],
+            outputs: &["result"],
+        },
+        NodeSocketSpec {
+            type_id: "map_range",
+            source_input: "value",
+            inputs: &["value", "in_min", "in_max", "out_min", "out_max"],
+            outputs: &["result"],
+        },
+        NodeSocketSpec {
+            type_id: "clamp",
+            source_input: "value",
+            inputs: &["value", "minimum", "maximum"],
+            outputs: &["result"],
+        },
+    ];
+
+    for spec in specs {
+        for value_type in numeric_value_types() {
+            let mut graph = AlchemistGraph::new();
+            let source = graph.add_node(constant(runtime_value(value_type))).unwrap();
+            let target = graph
+                .add_node(ANodeInstance::new(ANodeTypeId::new(spec.type_id), spec.type_id))
+                .unwrap();
+            graph
+                .connect(
+                    crate::OutputSocketRef::new(source, "value"),
+                    crate::InputSocketRef::new(target, spec.source_input),
+                )
+                .unwrap();
+
+            let result = solve(
+                &graph,
+                &ValueTypeRegistry::with_primitives(),
+                &primitive_node_registry(),
+            );
+
+            assert!(!result.has_errors(), "{:?}", result.diagnostics);
+            assert_resolved_socket_types(&result, target, spec.inputs, spec.outputs, value_type);
+        }
+    }
+}
+
+#[test]
+fn open_generic_nodes_infer_each_connected_primitive_type() {
+    let specs = [
+        NodeSocketSpec {
+            type_id: "compare",
+            source_input: "left",
+            inputs: &["left", "right"],
+            outputs: &[],
+        },
+        NodeSocketSpec {
+            type_id: "delay_one_tick",
+            source_input: "value",
+            inputs: &["value"],
+            outputs: &["value"],
+        },
+    ];
+
+    for spec in specs {
+        for value_type in primitive_value_types() {
+            let mut graph = AlchemistGraph::new();
+            let source = graph.add_node(constant(runtime_value(value_type))).unwrap();
+            let target = graph
+                .add_node(ANodeInstance::new(ANodeTypeId::new(spec.type_id), spec.type_id))
+                .unwrap();
+            graph
+                .connect(
+                    crate::OutputSocketRef::new(source, "value"),
+                    crate::InputSocketRef::new(target, spec.source_input),
+                )
+                .unwrap();
+
+            let result = solve(
+                &graph,
+                &ValueTypeRegistry::with_primitives(),
+                &primitive_node_registry(),
+            );
+
+            assert!(!result.has_errors(), "{:?}", result.diagnostics);
+            assert_resolved_socket_types(&result, target, spec.inputs, spec.outputs, value_type);
+        }
+    }
 }
 
 #[test]

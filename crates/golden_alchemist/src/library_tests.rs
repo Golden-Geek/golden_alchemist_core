@@ -75,6 +75,45 @@ fn add_signature_shares_named_generic_and_defaults_to_float() {
     );
 }
 
+#[test]
+fn forceable_math_value_type_options_derive_from_signature_constraint() {
+    let value_types = ValueTypeRegistry::with_primitives();
+    for kind in [
+        PrimitiveNodeKind::Add,
+        PrimitiveNodeKind::MapRange,
+        PrimitiveNodeKind::Clamp,
+    ] {
+        let declaration = PrimitiveNodeDeclaration::new(kind);
+        let fields = declaration.config_fields();
+        let field = fields
+            .iter()
+            .find(|field| field.id.as_str() == "value_type")
+            .expect("forceable math node should declare Value Type");
+        let options = field
+            .resolved_type_options(&signature(kind), &value_types)
+            .into_iter()
+            .map(|value_type| value_type.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            options,
+            ["int", "float", "vec2", "vec3", "color"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn passthrough_delay_infers_type_without_forced_value_type_field() {
+    assert!(
+        PrimitiveNodeDeclaration::new(PrimitiveNodeKind::DelayOneTick)
+            .config_fields()
+            .is_empty()
+    );
+}
+
 macro_rules! signature_test {
     ($name:ident, $kind:ident, $inputs:expr, $outputs:expr) => {
         #[test]
