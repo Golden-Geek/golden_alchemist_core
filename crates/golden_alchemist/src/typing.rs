@@ -193,6 +193,7 @@ struct WorkingNode {
     execution_kind: ExecutionKind,
     signature: crate::ANodeSignature,
     bindings: TypeBindings,
+    inferred_binding_priorities: HashMap<TypeVar, usize>,
 }
 
 #[must_use]
@@ -227,6 +228,7 @@ pub fn solve_types(graph: &AlchemistGraph, ctx: &TypeSolveCtx<'_>) -> TypeSolveR
                 execution_kind: declaration.execution_kind(),
                 signature,
                 bindings,
+                inferred_binding_priorities: HashMap::new(),
             },
         );
     }
@@ -235,7 +237,7 @@ pub fn solve_types(graph: &AlchemistGraph, ctx: &TypeSolveCtx<'_>) -> TypeSolveR
     for _ in 0..=working.len() {
         let mut changed = false;
         for edge in &graph.edges {
-            changed |= infer_edge(edge, &mut working, &mut socket_types);
+            changed |= infer_edge(edge, &mut working, &mut socket_types, ctx.value_types);
         }
         if !changed {
             break;
@@ -321,6 +323,7 @@ fn infer_edge(
     edge: &AEdge,
     working: &mut IndexMap<ANodeId, WorkingNode>,
     socket_types: &mut HashMap<SocketKey, ValueTypeId>,
+    registry: &ValueTypeRegistry,
 ) -> bool {
     let Some(output_constraint) = output_constraint(working, edge) else {
         return false;
@@ -344,26 +347,17 @@ fn infer_edge(
     if let (Some(value_type), TypeConstraint::Generic(variable)) = (&source_type, &input_constraint)
         && let Some(node) = working.get_mut(&edge.to.node)
     {
-        changed |= node
-            .bindings
-            .bind(
-                variable.clone(),
-                value_type.clone(),
-                TypeBindingSource::InferredFromConnection,
-            )
-            .unwrap_or(false);
+        if generic_binding_accepts(node, variable, value_type, registry) {
+            let priority = input_priority(node, &edge.to.socket);
+            changed |= bind_inferred_connection_type(node, variable, value_type.clone(), priority);
+        }
     }
     if let (Some(value_type), TypeConstraint::Generic(variable)) = (&target_type, &output_constraint)
         && let Some(node) = working.get_mut(&edge.from.node)
     {
-        changed |= node
-            .bindings
-            .bind(
-                variable.clone(),
-                value_type.clone(),
-                TypeBindingSource::InferredFromConnection,
-            )
-            .unwrap_or(false);
+        if generic_binding_accepts(node, variable, value_type, registry) {
+            changed |= bind_inferred_connection_type(node, variable, value_type.clone(), usize::MAX);
+        }
     }
     if let Some(value_type) = source_type.as_ref()
         && target_type.is_none()
@@ -382,6 +376,75 @@ fn infer_edge(
             .is_none();
     }
     changed
+}
+
+fn generic_binding_accepts(
+    node: &WorkingNode,
+    variable: &TypeVar,
+    value_type: &ValueTypeId,
+    registry: &ValueTypeRegistry,
+) -> bool {
+    node.signature
+        .generic_constraints
+        .get(variable)
+        .is_none_or(|constraint| constraint_accepts(constraint, value_type, registry))
+}
+
+fn bind_inferred_connection_type(
+    node: &mut WorkingNode,
+    variable: &TypeVar,
+    value_type: ValueTypeId,
+    priority: usize,
+) -> bool {
+    let Some(existing) = node.bindings.get(variable) else {
+        node.bindings
+            .insert(variable.clone(), value_type, TypeBindingSource::InferredFromConnection);
+        node.inferred_binding_priorities.insert(variable.clone(), priority);
+        return true;
+    };
+
+    if existing.source > TypeBindingSource::InferredFromConnection {
+        return false;
+    }
+
+    if existing.source == TypeBindingSource::InferredFromConnection {
+        let existing_priority = node
+            .inferred_binding_priorities
+            .get(variable)
+            .copied()
+            .unwrap_or(usize::MAX);
+        if priority > existing_priority {
+            return false;
+        }
+        if priority == existing_priority && existing.value_type == value_type {
+            return false;
+        }
+    } else if existing.value_type == value_type {
+        node.inferred_binding_priorities.insert(variable.clone(), priority);
+        node.bindings
+            .insert(variable.clone(), value_type, TypeBindingSource::InferredFromConnection);
+        return true;
+    }
+
+    let changed = existing.value_type != value_type
+        || existing.source != TypeBindingSource::InferredFromConnection
+        || node
+            .inferred_binding_priorities
+            .get(variable)
+            .is_none_or(|existing_priority| priority < *existing_priority);
+    node.bindings
+        .insert(variable.clone(), value_type, TypeBindingSource::InferredFromConnection);
+    node.inferred_binding_priorities.insert(variable.clone(), priority);
+    changed
+}
+
+fn input_priority(node: &WorkingNode, socket: &SocketId) -> usize {
+    let (base_socket, _) = split_socket_component(socket);
+    node.signature
+        .inputs
+        .iter()
+        .position(|input| input.id == base_socket)
+        .unwrap_or(usize::MAX)
 }
 
 fn validate_generic_bindings(

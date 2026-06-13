@@ -133,6 +133,81 @@ fn vec3_connection_reshapes_add_inputs_and_output() {
 }
 
 #[test]
+fn first_generic_input_decides_numeric_node_type() {
+    let mut graph = AlchemistGraph::new();
+    let vec3_source = graph.add_node(constant(RuntimeValue::Vec3([1.0, 2.0, 3.0]))).unwrap();
+    let float_source = graph.add_node(constant(RuntimeValue::Float(1.0))).unwrap();
+    let add = graph
+        .add_node(ANodeInstance::new(ANodeTypeId::new("add"), "Add"))
+        .unwrap();
+    graph
+        .connect(
+            crate::OutputSocketRef::new(vec3_source, "value"),
+            crate::InputSocketRef::new(add, "b"),
+        )
+        .unwrap();
+    graph
+        .connect(
+            crate::OutputSocketRef::new(float_source, "value"),
+            crate::InputSocketRef::new(add, "a"),
+        )
+        .unwrap();
+
+    let result = solve(
+        &graph,
+        &ValueTypeRegistry::with_primitives(),
+        &primitive_node_registry(),
+    );
+
+    assert!(!result.has_errors(), "{:?}", result.diagnostics);
+    assert_resolved_socket_types(&result, add, &["a", "b"], &["result"], "float");
+}
+
+#[test]
+fn primitive_registry_allows_runtime_supported_conversions() {
+    let value_types = ValueTypeRegistry::with_primitives();
+    let targets = [
+        "unit", "bool", "int", "float", "string", "vec2", "vec3", "color", "duration",
+    ];
+
+    for source in primitive_value_types() {
+        for target in targets {
+            if *source == "trigger" && target == "trigger" {
+                continue;
+            }
+            assert!(
+                value_types.can_convert_automatically(&ValueTypeId::new(*source), &ValueTypeId::new(target)),
+                "`{source}` should automatically convert to `{target}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn numeric_node_keeps_supported_type_for_convertible_non_numeric_input() {
+    let mut graph = AlchemistGraph::new();
+    let source = graph.add_node(constant(RuntimeValue::String("12.5".into()))).unwrap();
+    let add = graph
+        .add_node(ANodeInstance::new(ANodeTypeId::new("add"), "Add"))
+        .unwrap();
+    graph
+        .connect(
+            crate::OutputSocketRef::new(source, "value"),
+            crate::InputSocketRef::new(add, "a"),
+        )
+        .unwrap();
+
+    let result = solve(
+        &graph,
+        &ValueTypeRegistry::with_primitives(),
+        &primitive_node_registry(),
+    );
+
+    assert!(!result.has_errors(), "{:?}", result.diagnostics);
+    assert_resolved_socket_types(&result, add, &["a", "b"], &["result"], "float");
+}
+
+#[test]
 fn numeric_generic_nodes_infer_each_supported_connected_type() {
     let specs = [
         NodeSocketSpec {
