@@ -22,8 +22,8 @@ pub use expose::{
 };
 pub use formula::{
     AlchemistFormula, AlchemistFormulaInstance, FormulaContextContract, FormulaMaterializationError, FormulaMigration,
-    FormulaOverrides, FormulaRef, FormulaSurface, FormulaSurfaceBindings, ManagedANodeBindings, SurfaceItem,
-    SurfaceItemKind, SurfaceSection, SurfaceSource,
+    FormulaOverrides, FormulaPropertyDecl, FormulaPropertySchema, FormulaRef, FormulaSurface, FormulaSurfaceBindings,
+    ManagedANodeBindings, PropertyUiHints, SurfaceItem, SurfaceItemKind, SurfaceSection, SurfaceSource,
 };
 pub use graph::{
     AEdge, ANodeConfig, ANodeInstance, ANodeUiState, AlchemistGraph, GraphComment, GraphEditError, GraphGroup,
@@ -31,7 +31,8 @@ pub use graph::{
 };
 pub use ids::{
     ANodeId, ANodeTypeId, AlchemistGraphId, ContextDimensionId, ExecNodeId, ExposedDeclId, FacetId, FormulaId,
-    SocketId, SurfaceContributionId, SurfaceItemId, SurfaceSectionId, ValueSlotId, ValueTypeId,
+    FormulaPropertyId, FormulaPropertySlotId, SocketId, SurfaceContributionId, SurfaceItemId, SurfaceSectionId,
+    ValueSlotId, ValueTypeId,
 };
 pub use library::{PrimitiveNodeDeclaration, PrimitiveNodeKind, primitive_node_registry, register_primitive_nodes};
 pub use node::{
@@ -44,7 +45,8 @@ pub use registry::{
 };
 pub use runtime::{
     AlchemistMemory, AlchemistRuntime, CompiledNodeEvaluator, DebugValueSample, EvaluationCtx, NodeEvaluation,
-    RuntimeDiagnostic, RuntimeEvent, RuntimeInputSnapshot, RuntimeIntent, RuntimeOutput, RuntimeRegistries,
+    RuntimeDiagnostic, RuntimeEvent, RuntimeInputSnapshot, RuntimeIntent, RuntimeOutput, RuntimePropertyFrame,
+    RuntimePropertyFrameError, RuntimeRegistries,
 };
 pub use typing::{
     ResolvedANode, ResolvedANodeSignature, ResolvedGraph, ResolvedSocket, TypeBinding, TypeBindingConflict,
@@ -75,6 +77,7 @@ mod tests;
 #[cfg(test)]
 mod typing_tests;
 pub use compile::{
-    CompileCtx, CompileResult, CompiledAlchemistGraph, CompiledExecNode, CompiledNodeOperation, DebugSourceMap,
-    DisabledOutput, InputValueSource, OutputRoute, RuntimeStateLayout, RuntimeSubscription, compile_graph,
+    CompileCtx, CompileResult, CompiledAlchemistGraph, CompiledExecNode, CompiledFormulaProperty,
+    CompiledFormulaPropertySchema, CompiledNodeOperation, DebugSourceMap, DisabledOutput, InputValueSource,
+    OutputRoute, RuntimeStateLayout, RuntimeSubscription, compile_graph,
 };

@@ -1,9 +1,12 @@
 use std::time::Duration;
 
+use indexmap::IndexMap;
+
 use crate::{
     ANodeInstance, ANodeTypeId, AlchemistGraph, AlchemistRuntime, ColorValue, CompileCtx, EvaluationCtx,
-    InputSocketRef, InputValueSource, OutputSocketRef, RuntimeInputSnapshot, RuntimeRegistries, RuntimeValue, SocketId,
-    TriggerValue, TypeBindingSource, TypeVar, ValueTypeId, ValueTypeRegistry, compile_graph, primitive_node_registry,
+    FormulaPropertyDecl, FormulaPropertyId, FormulaPropertySchema, InputSocketRef, InputValueSource, OutputSocketRef,
+    RuntimeInputSnapshot, RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SocketId, TriggerValue,
+    TypeBindingSource, TypeVar, ValueTypeId, ValueTypeRegistry, compile_graph, primitive_node_registry,
 };
 
 fn node(type_id: &str) -> ANodeInstance {
@@ -17,15 +20,57 @@ fn constant(value: RuntimeValue) -> ANodeInstance {
 }
 
 fn runtime(graph: &AlchemistGraph) -> AlchemistRuntime {
+    runtime_with_properties(graph, None)
+}
+
+fn runtime_with_properties(graph: &AlchemistGraph, properties: Option<&FormulaPropertySchema>) -> AlchemistRuntime {
     let result = compile_graph(
         graph,
         &CompileCtx {
             value_types: &ValueTypeRegistry::with_primitives(),
             nodes: &primitive_node_registry(),
+            properties,
         },
     );
     assert!(!result.has_errors(), "{:?}", result.diagnostics);
     AlchemistRuntime::new(result.compiled.unwrap())
+}
+
+fn compile_with_properties(
+    graph: &AlchemistGraph,
+    properties: &FormulaPropertySchema,
+) -> std::sync::Arc<crate::CompiledAlchemistGraph> {
+    let value_types = ValueTypeRegistry::with_primitives();
+    let nodes = primitive_node_registry();
+    let result = compile_graph(
+        graph,
+        &CompileCtx {
+            value_types: &value_types,
+            nodes: &nodes,
+            properties: Some(properties),
+        },
+    );
+    assert!(!result.has_errors(), "{:?}", result.diagnostics);
+    result.compiled.unwrap()
+}
+
+fn property_schema(id: &str, value_type: &str, default_value: RuntimeValue) -> FormulaPropertySchema {
+    let mut schema = FormulaPropertySchema::default();
+    schema.insert(FormulaPropertyDecl {
+        id: FormulaPropertyId::new(id),
+        label: id.into(),
+        description: None,
+        value_type: ValueTypeId::new(value_type),
+        default_value,
+        ui: crate::PropertyUiHints::default(),
+    });
+    schema
+}
+
+fn property_node(id: &str) -> ANodeInstance {
+    let mut node = node("property");
+    node.config.set("property_id", RuntimeValue::String(id.into()));
+    node
 }
 
 fn evaluate(runtime: &mut AlchemistRuntime, logical_tick: u64) -> crate::RuntimeOutput {
@@ -372,4 +417,101 @@ fn effect_node_emits_intent_without_dispatching_side_effect() {
     assert_eq!(output.intents.len(), 1);
     assert_eq!(output.intents[0].kind.as_ref(), "debug.log");
     assert_eq!(output.intents[0].logical_tick, 7);
+}
+
+#[test]
+fn property_node_reads_default_from_runtime_frame() {
+    let mut graph = AlchemistGraph::new();
+    let mut property = property_node("amount");
+    property.config.set("value", RuntimeValue::Float(99.0));
+    graph.add_node(property).unwrap();
+    let schema = property_schema("amount", "float", RuntimeValue::Float(1.5));
+    let mut runtime = runtime_with_properties(&graph, Some(&schema));
+
+    let output = evaluate(&mut runtime, 1);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(
+        output
+            .debug_samples
+            .iter()
+            .any(|sample| sample.value == RuntimeValue::Float(1.5))
+    );
+}
+
+#[test]
+fn property_node_reads_processor_override_from_runtime_frame() {
+    let mut graph = AlchemistGraph::new();
+    graph.add_node(property_node("amount")).unwrap();
+    let schema = property_schema("amount", "float", RuntimeValue::Float(1.5));
+    let compiled = compile_with_properties(&graph, &schema);
+    let mut overrides = IndexMap::new();
+    overrides.insert(FormulaPropertyId::new("amount"), RuntimeValue::Float(2.5));
+    let frame = RuntimePropertyFrame::with_overrides(&compiled.properties, &overrides).unwrap();
+    let mut runtime = AlchemistRuntime::with_property_frame(compiled, frame);
+
+    let output = evaluate(&mut runtime, 1);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(
+        output
+            .debug_samples
+            .iter()
+            .any(|sample| sample.value == RuntimeValue::Float(2.5))
+    );
+}
+
+#[test]
+fn processor_override_rejects_invalid_property_type() {
+    let mut graph = AlchemistGraph::new();
+    graph.add_node(property_node("amount")).unwrap();
+    let schema = property_schema("amount", "float", RuntimeValue::Float(1.5));
+    let compiled = compile_with_properties(&graph, &schema);
+    let mut overrides = IndexMap::new();
+    overrides.insert(FormulaPropertyId::new("amount"), RuntimeValue::Bool(true));
+
+    let result = RuntimePropertyFrame::with_overrides(&compiled.properties, &overrides);
+
+    assert!(matches!(
+        result,
+        Err(crate::RuntimePropertyFrameError::InvalidOverrideType { .. })
+    ));
+}
+
+#[test]
+fn changing_processor_override_does_not_recompile_formula() {
+    let mut graph = AlchemistGraph::new();
+    graph.add_node(property_node("amount")).unwrap();
+    let schema = property_schema("amount", "float", RuntimeValue::Float(1.5));
+    let compiled = compile_with_properties(&graph, &schema);
+
+    let mut first_overrides = IndexMap::new();
+    first_overrides.insert(FormulaPropertyId::new("amount"), RuntimeValue::Float(2.0));
+    let first_frame = RuntimePropertyFrame::with_overrides(&compiled.properties, &first_overrides).unwrap();
+    let mut first_runtime = AlchemistRuntime::with_property_frame(compiled.clone(), first_frame);
+
+    let mut second_overrides = IndexMap::new();
+    second_overrides.insert(FormulaPropertyId::new("amount"), RuntimeValue::Float(3.0));
+    let second_frame = RuntimePropertyFrame::with_overrides(&compiled.properties, &second_overrides).unwrap();
+    let mut second_runtime = AlchemistRuntime::with_property_frame(compiled.clone(), second_frame);
+
+    let first_output = evaluate(&mut first_runtime, 1);
+    let second_output = evaluate(&mut second_runtime, 1);
+
+    assert!(std::sync::Arc::ptr_eq(
+        &first_runtime.compiled,
+        &second_runtime.compiled
+    ));
+    assert!(
+        first_output
+            .debug_samples
+            .iter()
+            .any(|sample| sample.value == RuntimeValue::Float(2.0))
+    );
+    assert!(
+        second_output
+            .debug_samples
+            .iter()
+            .any(|sample| sample.value == RuntimeValue::Float(3.0))
+    );
 }

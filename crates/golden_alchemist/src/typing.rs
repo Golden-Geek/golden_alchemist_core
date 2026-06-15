@@ -5,8 +5,8 @@ use smol_str::SmolStr;
 
 use crate::{
     AEdge, ANodeId, ANodeRegistry, AlchemistGraph, Diagnostic, DiagnosticOrigin, DiagnosticSeverity, ExecutionKind,
-    FacetId, InputSocketDecl, OutputSocketDecl, SignatureCtx, SocketId, ValueComponent, ValueTypeId, ValueTypeRegistry,
-    component_value_type,
+    FacetId, FormulaPropertySchema, InputSocketDecl, OutputSocketDecl, SignatureCtx, SocketId, ValueComponent,
+    ValueTypeId, ValueTypeRegistry, component_value_type,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -187,6 +187,7 @@ impl TypeSolveResult {
 pub struct TypeSolveCtx<'a> {
     pub value_types: &'a ValueTypeRegistry,
     pub nodes: &'a ANodeRegistry,
+    pub properties: Option<&'a FormulaPropertySchema>,
 }
 
 struct WorkingNode {
@@ -202,6 +203,7 @@ pub fn solve_types(graph: &AlchemistGraph, ctx: &TypeSolveCtx<'_>) -> TypeSolveR
     let mut working = IndexMap::<ANodeId, WorkingNode>::new();
     let signature_ctx = SignatureCtx {
         value_types: ctx.value_types,
+        properties: ctx.properties,
     };
 
     for (node_id, instance) in &graph.nodes {

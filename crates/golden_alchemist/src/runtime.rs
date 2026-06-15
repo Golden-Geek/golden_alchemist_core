@@ -1,8 +1,9 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
 
 use crate::{
-    ColorValue, CompiledAlchemistGraph, CompiledNodeOperation, ExecNodeId, InputValueSource, RuntimeValue, StableRef,
-    TriggerValue, ValueSlotId, ValueTypeRegistry,
+    ColorValue, CompiledAlchemistGraph, CompiledFormulaPropertySchema, CompiledNodeOperation, ExecNodeId,
+    FormulaPropertyId, FormulaPropertySlotId, InputValueSource, RuntimeValue, StableRef, TriggerValue, ValueSlotId,
+    ValueTypeId, ValueTypeRegistry,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -89,10 +90,73 @@ impl AlchemistMemory {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimePropertyFrame {
+    values: Box<[RuntimeValue]>,
+}
+
+impl RuntimePropertyFrame {
+    #[must_use]
+    pub fn from_defaults(schema: &CompiledFormulaPropertySchema) -> Self {
+        let mut values = vec![RuntimeValue::Unit; schema.len()];
+        for property in schema.properties.values() {
+            values[property.slot.index()] = property.default_value.clone();
+        }
+        Self {
+            values: values.into_boxed_slice(),
+        }
+    }
+
+    pub fn with_overrides(
+        schema: &CompiledFormulaPropertySchema,
+        overrides: &indexmap::IndexMap<FormulaPropertyId, RuntimeValue>,
+    ) -> Result<Self, RuntimePropertyFrameError> {
+        let mut frame = Self::from_defaults(schema);
+        for (id, value) in overrides {
+            let property = schema
+                .get(id)
+                .ok_or_else(|| RuntimePropertyFrameError::UnknownProperty(id.clone()))?;
+            let actual = value.value_type();
+            if actual != property.value_type {
+                return Err(RuntimePropertyFrameError::InvalidOverrideType {
+                    property: id.clone(),
+                    expected: property.value_type.clone(),
+                    actual,
+                });
+            }
+            frame.values[property.slot.index()] = value.clone();
+        }
+        Ok(frame)
+    }
+
+    #[must_use]
+    pub fn get(&self, slot: FormulaPropertySlotId) -> Option<&RuntimeValue> {
+        self.values.get(slot.index())
+    }
+
+    #[must_use]
+    pub fn slot_count(&self) -> usize {
+        self.values.len()
+    }
+}
+
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum RuntimePropertyFrameError {
+    #[error("processor override references unknown property `{0}`")]
+    UnknownProperty(FormulaPropertyId),
+    #[error("processor override for property `{property}` has type `{actual}`, expected `{expected}`")]
+    InvalidOverrideType {
+        property: FormulaPropertyId,
+        expected: ValueTypeId,
+        actual: ValueTypeId,
+    },
+}
+
 pub struct NodeEvaluation<'a, 'ctx> {
     pub exec_node: ExecNodeId,
     pub ctx: &'a EvaluationCtx<'ctx>,
     pub inputs: &'a [RuntimeValue],
+    pub properties: &'a RuntimePropertyFrame,
     pub state: &'a mut [RuntimeValue],
     pub intents: &'a mut Vec<RuntimeIntent>,
 }
@@ -104,6 +168,7 @@ pub trait CompiledNodeEvaluator: Send + Sync + Debug {
 pub struct AlchemistRuntime {
     pub compiled: Arc<CompiledAlchemistGraph>,
     pub memory: AlchemistMemory,
+    pub properties: RuntimePropertyFrame,
     execution_counts: Vec<u64>,
     evaluating: bool,
 }
@@ -112,13 +177,32 @@ impl AlchemistRuntime {
     #[must_use]
     pub fn new(compiled: Arc<CompiledAlchemistGraph>) -> Self {
         let memory = AlchemistMemory::for_graph(&compiled);
+        let properties = RuntimePropertyFrame::from_defaults(&compiled.properties);
         let execution_counts = vec![0; compiled.exec_nodes.len()];
         Self {
             compiled,
             memory,
+            properties,
             execution_counts,
             evaluating: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_property_frame(compiled: Arc<CompiledAlchemistGraph>, properties: RuntimePropertyFrame) -> Self {
+        let memory = AlchemistMemory::for_graph(&compiled);
+        let execution_counts = vec![0; compiled.exec_nodes.len()];
+        Self {
+            compiled,
+            memory,
+            properties,
+            execution_counts,
+            evaluating: false,
+        }
+    }
+
+    pub fn set_property_frame(&mut self, properties: RuntimePropertyFrame) {
+        self.properties = properties;
     }
 
     pub fn evaluate(&mut self, ctx: &EvaluationCtx<'_>) -> RuntimeOutput {
@@ -158,6 +242,7 @@ impl AlchemistRuntime {
                     exec_node: *exec_id,
                     ctx,
                     inputs: &inputs,
+                    properties: &self.properties,
                     state,
                     intents: &mut output.intents,
                 },
@@ -262,6 +347,12 @@ fn evaluate_operation(
             })
             .collect()),
         CompiledNodeOperation::Constant(value) => Ok(vec![value.clone()]),
+        CompiledNodeOperation::ReadProperty(slot) => evaluation
+            .properties
+            .get(*slot)
+            .cloned()
+            .map(|value| vec![value])
+            .ok_or_else(|| format!("property slot {} is unavailable", slot.index())),
         CompiledNodeOperation::Add => {
             let [left, right] = require_inputs::<2>(evaluation.inputs)?;
             Ok(vec![add_values(left, right)?])

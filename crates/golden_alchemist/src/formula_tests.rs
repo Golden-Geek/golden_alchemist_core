@@ -1,7 +1,7 @@
 use crate::{
     ANodeFieldPath, ANodeInstance, ANodeTypeId, AlchemistFormula, AlchemistGraph, FormulaContextContract, FormulaId,
-    FormulaSurface, ParamUiHints, RuntimeValue, SurfaceItem, SurfaceItemId, SurfaceItemKind, SurfaceSection,
-    SurfaceSectionId, SurfaceSource, ValueTypeId, ValueTypeSpec,
+    FormulaPropertySchema, FormulaSurface, ParamUiHints, RuntimeValue, SurfaceItem, SurfaceItemId, SurfaceItemKind,
+    SurfaceSection, SurfaceSectionId, SurfaceSource, ValueTypeId, ValueTypeSpec,
 };
 
 #[test]
@@ -40,6 +40,7 @@ fn formula_instance_references_shared_definition_and_materializes_overrides() {
         description: None,
         tags: Vec::new(),
         graph,
+        properties: FormulaPropertySchema::default(),
         surface,
         context_contract: FormulaContextContract::default(),
         migrations: Vec::new(),

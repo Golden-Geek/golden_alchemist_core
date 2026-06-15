@@ -1,6 +1,7 @@
 use crate::{
-    ANodeInstance, ANodeTypeId, AlchemistGraph, CompileCtx, InputSocketRef, OutputSocketRef, RuntimeValue,
-    ValueTypeRegistry, compile_graph, primitive_node_registry,
+    ANodeInstance, ANodeTypeId, AlchemistGraph, CompileCtx, FormulaPropertyDecl, FormulaPropertyId,
+    FormulaPropertySchema, InputSocketRef, OutputSocketRef, RuntimeValue, TypeSolveCtx, ValueTypeId, ValueTypeRegistry,
+    compile_graph, primitive_node_registry, solve_types,
 };
 
 fn node(type_id: &str) -> ANodeInstance {
@@ -8,13 +9,37 @@ fn node(type_id: &str) -> ANodeInstance {
 }
 
 fn compile(graph: &AlchemistGraph) -> crate::CompileResult {
+    compile_with_properties(graph, None)
+}
+
+fn compile_with_properties(graph: &AlchemistGraph, properties: Option<&FormulaPropertySchema>) -> crate::CompileResult {
     compile_graph(
         graph,
         &CompileCtx {
             value_types: &ValueTypeRegistry::with_primitives(),
             nodes: &primitive_node_registry(),
+            properties,
         },
     )
+}
+
+fn property_schema(id: &str, value_type: &str, default_value: RuntimeValue) -> FormulaPropertySchema {
+    let mut schema = FormulaPropertySchema::default();
+    schema.insert(FormulaPropertyDecl {
+        id: FormulaPropertyId::new(id),
+        label: id.into(),
+        description: None,
+        value_type: ValueTypeId::new(value_type),
+        default_value,
+        ui: crate::PropertyUiHints::default(),
+    });
+    schema
+}
+
+fn property_node(id: &str) -> ANodeInstance {
+    let mut node = node("property");
+    node.config.set("property_id", RuntimeValue::String(id.into()));
+    node
 }
 
 #[test]
@@ -88,4 +113,63 @@ fn delay_node_allows_feedback() {
 
     assert!(!result.has_errors(), "{:?}", result.diagnostics);
     assert_eq!(result.compiled.unwrap().topo_order.len(), 2);
+}
+
+#[test]
+fn property_decl_rejects_invalid_default() {
+    let graph = AlchemistGraph::new();
+    let schema = property_schema("amount", "float", RuntimeValue::String("not a float".into()));
+
+    let result = compile_with_properties(&graph, Some(&schema));
+
+    assert!(result.compiled.is_none());
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "invalid_property_default_type")
+    );
+}
+
+#[test]
+fn property_node_rejects_missing_property_id() {
+    let mut graph = AlchemistGraph::new();
+    graph.add_node(node("property")).unwrap();
+    let schema = property_schema("amount", "float", RuntimeValue::Float(1.0));
+
+    let result = compile_with_properties(&graph, Some(&schema));
+
+    assert!(result.compiled.is_none());
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "missing_property_id")
+    );
+}
+
+#[test]
+fn property_node_type_comes_from_schema() {
+    let mut graph = AlchemistGraph::new();
+    let mut property = property_node("enabled");
+    property.config.set("value", RuntimeValue::Float(123.0));
+    let property = graph.add_node(property).unwrap();
+    let schema = property_schema("enabled", "bool", RuntimeValue::Bool(true));
+    let value_types = ValueTypeRegistry::with_primitives();
+    let nodes = primitive_node_registry();
+
+    let result = solve_types(
+        &graph,
+        &TypeSolveCtx {
+            value_types: &value_types,
+            nodes: &nodes,
+            properties: Some(&schema),
+        },
+    );
+
+    assert!(!result.has_errors(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.graph.nodes[&property].signature.outputs[&crate::SocketId::new("value")].value_type,
+        Some(ValueTypeId::new("bool"))
+    );
 }

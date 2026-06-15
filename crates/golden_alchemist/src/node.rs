@@ -2,8 +2,9 @@ use indexmap::IndexMap;
 use smol_str::SmolStr;
 
 use crate::{
-    ANodeInstance, ANodeTypeId, CompiledNodeOperation, Diagnostic, DiagnosticOrigin, ResolvedANodeSignature,
-    RuntimeValue, SocketId, TypeBindings, TypeConstraint, TypeVar, ValueStorageKind, ValueTypeId, ValueTypeRegistry,
+    ANodeInstance, ANodeTypeId, CompiledNodeOperation, Diagnostic, DiagnosticOrigin, FormulaPropertySchema,
+    ResolvedANodeSignature, RuntimeValue, SocketId, TypeBindings, TypeConstraint, TypeVar, ValueStorageKind,
+    ValueTypeId, ValueTypeRegistry,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +74,7 @@ pub struct ANodeSignature {
 
 pub struct SignatureCtx<'a> {
     pub value_types: &'a ValueTypeRegistry,
+    pub properties: Option<&'a FormulaPropertySchema>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

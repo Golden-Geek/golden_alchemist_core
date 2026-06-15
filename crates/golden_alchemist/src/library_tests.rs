@@ -10,6 +10,7 @@ fn signature(kind: PrimitiveNodeKind) -> crate::ANodeSignature {
     declaration.signature(
         &SignatureCtx {
             value_types: &value_types,
+            properties: None,
         },
         &instance,
         &instance.type_bindings,
@@ -21,6 +22,7 @@ fn primitive_catalog_contains_every_declaration() {
     let registry = primitive_node_registry();
     for id in [
         "constant",
+        "property",
         "math",
         "function",
         "remap",
@@ -62,6 +64,7 @@ fn constant_signature_uses_configured_value_type() {
     let signature = declaration.signature(
         &SignatureCtx {
             value_types: &value_types,
+            properties: None,
         },
         &instance,
         &instance.type_bindings,

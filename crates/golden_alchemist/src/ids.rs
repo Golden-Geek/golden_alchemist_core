@@ -86,6 +86,7 @@ uuid_id!(ANodeId);
 string_id!(ANodeTypeId);
 string_id!(ContextDimensionId);
 string_id!(FormulaId);
+string_id!(FormulaPropertyId);
 string_id!(SurfaceContributionId);
 string_id!(SurfaceItemId);
 string_id!(SurfaceSectionId);
@@ -119,6 +120,21 @@ impl fmt::Display for ExecNodeId {
 pub struct ValueSlotId(u32);
 
 impl ValueSlotId {
+    #[must_use]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FormulaPropertySlotId(u32);
+
+impl FormulaPropertySlotId {
     #[must_use]
     pub const fn new(value: u32) -> Self {
         Self(value)

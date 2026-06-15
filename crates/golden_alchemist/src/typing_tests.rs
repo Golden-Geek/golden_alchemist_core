@@ -6,7 +6,14 @@ use crate::{
 };
 
 fn solve(graph: &AlchemistGraph, value_types: &ValueTypeRegistry, nodes: &ANodeRegistry) -> crate::TypeSolveResult {
-    solve_types(graph, &TypeSolveCtx { value_types, nodes })
+    solve_types(
+        graph,
+        &TypeSolveCtx {
+            value_types,
+            nodes,
+            properties: None,
+        },
+    )
 }
 
 fn constant(value: RuntimeValue) -> ANodeInstance {

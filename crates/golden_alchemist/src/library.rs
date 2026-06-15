@@ -2,14 +2,15 @@ use std::{cmp::Ordering, fmt::Debug, sync::Arc, time::Duration};
 
 use crate::{
     ANodeConfigFieldDecl, ANodeDeclaration, ANodeInstance, ANodeRegistry, ANodeSignature, ANodeTypeId, ColorValue,
-    CompiledNodeEvaluator, CompiledNodeOperation, Diagnostic, ExecutionKind, InputSocketDecl, NodeEvaluation,
-    OutputSocketDecl, RegistryError, ResolvedANodeSignature, RuntimeValue, SignatureCtx, TriggerValue,
-    TypeBindingSource, TypeBindings, TypeConstraint, TypeVar, ValueTypeId,
+    CompiledNodeEvaluator, CompiledNodeOperation, Diagnostic, DiagnosticOrigin, ExecutionKind, FormulaPropertyId,
+    InputSocketDecl, NodeEvaluation, OutputSocketDecl, RegistryError, ResolvedANodeSignature, RuntimeValue,
+    SignatureCtx, TriggerValue, TypeBindingSource, TypeBindings, TypeConstraint, TypeVar, ValueTypeId,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrimitiveNodeKind {
     Constant,
+    Property,
     Math,
     Function,
     Remap,
@@ -40,8 +41,9 @@ pub enum PrimitiveNodeKind {
 }
 
 impl PrimitiveNodeKind {
-    const ALL: [Self; 28] = [
+    const ALL: [Self; 29] = [
         Self::Constant,
+        Self::Property,
         Self::Math,
         Self::Function,
         Self::Remap,
@@ -75,6 +77,7 @@ impl PrimitiveNodeKind {
     pub const fn type_name(self) -> &'static str {
         match self {
             Self::Constant => "constant",
+            Self::Property => "property",
             Self::Math => "math",
             Self::Function => "function",
             Self::Remap => "remap",
@@ -130,6 +133,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
     fn label(&self) -> &'static str {
         match self.kind {
             PrimitiveNodeKind::Constant => "Constant",
+            PrimitiveNodeKind::Property => "Property",
             PrimitiveNodeKind::Math => "Math",
             PrimitiveNodeKind::Function => "Function",
             PrimitiveNodeKind::Remap => "Remap",
@@ -163,6 +167,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
     fn category(&self) -> &'static str {
         match self.kind {
             PrimitiveNodeKind::Constant
+            | PrimitiveNodeKind::Property
             | PrimitiveNodeKind::Lfo
             | PrimitiveNodeKind::NoiseGenerator
             | PrimitiveNodeKind::Metronome => "Values",
@@ -211,6 +216,10 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                 ANodeConfigFieldDecl::new("value", "Value", RuntimeValue::Float(0.0))
                     .with_description("The constant value emitted by this node.")
                     .with_editor("runtime_value"),
+            ],
+            PrimitiveNodeKind::Property => vec![
+                ANodeConfigFieldDecl::new("property_id", "Property ID", RuntimeValue::String(Arc::from("")))
+                    .with_description("Stable Formula property identifier."),
             ],
             PrimitiveNodeKind::Math => vec![
                 enum_config(
@@ -383,9 +392,10 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
         }
     }
 
-    fn signature(&self, _ctx: &SignatureCtx<'_>, instance: &ANodeInstance, _bindings: &TypeBindings) -> ANodeSignature {
+    fn signature(&self, ctx: &SignatureCtx<'_>, instance: &ANodeInstance, _bindings: &TypeBindings) -> ANodeSignature {
         match self.kind {
             PrimitiveNodeKind::Constant => constant_signature(instance),
+            PrimitiveNodeKind::Property => property_signature(ctx, instance),
             PrimitiveNodeKind::Math => {
                 generic_numbered_numeric_signature("value", "Value", input_count(instance, 2), "result")
             }
@@ -502,6 +512,13 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                     .cloned()
                     .unwrap_or(RuntimeValue::Float(0.0)),
             ),
+            PrimitiveNodeKind::Property => {
+                return Err(Diagnostic::error(
+                    "property_requires_compile_context",
+                    "property nodes compile through compile_graph so they can bind a property slot",
+                    DiagnosticOrigin::Node(instance.id),
+                ));
+            }
             PrimitiveNodeKind::Math => CompiledNodeOperation::Custom(Arc::new(MathEval {
                 operator: MathOperator::from_config(instance),
             })),
@@ -727,6 +744,31 @@ fn constant_signature(instance: &ANodeInstance) -> ANodeSignature {
         )],
         ..ANodeSignature::default()
     }
+}
+
+fn property_signature(ctx: &SignatureCtx<'_>, instance: &ANodeInstance) -> ANodeSignature {
+    let value_type = property_id_from_config(instance)
+        .and_then(|id| ctx.properties.and_then(|schema| schema.get(&id)))
+        .map_or_else(
+            || ValueTypeId::new("unit"),
+            |declaration| declaration.value_type.clone(),
+        );
+    ANodeSignature {
+        inputs: Vec::new(),
+        outputs: vec![OutputSocketDecl::new(
+            "value",
+            "Value",
+            TypeConstraint::Exact(value_type),
+        )],
+        ..ANodeSignature::default()
+    }
+}
+
+fn property_id_from_config(instance: &ANodeInstance) -> Option<FormulaPropertyId> {
+    let RuntimeValue::String(value) = instance.config.get("property_id")? else {
+        return None;
+    };
+    (!value.is_empty()).then(|| FormulaPropertyId::new(value.as_ref()))
 }
 
 fn function_signature(instance: &ANodeInstance) -> ANodeSignature {

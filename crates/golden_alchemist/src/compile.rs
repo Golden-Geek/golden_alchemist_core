@@ -4,8 +4,9 @@ use indexmap::IndexMap;
 
 use crate::{
     ANodeId, ANodeRegistry, AlchemistGraph, CompiledNodeEvaluator, Diagnostic, DiagnosticOrigin, DiagnosticSeverity,
-    ExecNodeId, ExecutionKind, ExposedSurface, ResolvedANodeSignature, RuntimeValue, SocketId, TypeSolveCtx,
-    ValueComponent, ValueSlotId, ValueTypeId, ValueTypeRegistry, component_value_type, solve_types,
+    ExecNodeId, ExecutionKind, ExposedSurface, FormulaPropertyId, FormulaPropertySchema, FormulaPropertySlotId,
+    ResolvedANodeSignature, RuntimeValue, SocketId, TypeSolveCtx, ValueComponent, ValueSlotId, ValueTypeId,
+    ValueTypeRegistry, component_value_type, solve_types,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -32,6 +33,7 @@ pub enum InputValueSource {
 pub enum CompiledNodeOperation {
     Disabled { outputs: Vec<DisabledOutput> },
     Constant(RuntimeValue),
+    ReadProperty(FormulaPropertySlotId),
     Add,
     Compare,
     BoolAnd,
@@ -71,6 +73,45 @@ pub struct RuntimeStateLayout {
     pub value_slot_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledFormulaProperty {
+    pub id: FormulaPropertyId,
+    pub slot: FormulaPropertySlotId,
+    pub value_type: ValueTypeId,
+    pub default_value: RuntimeValue,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CompiledFormulaPropertySchema {
+    pub properties: IndexMap<FormulaPropertyId, CompiledFormulaProperty>,
+}
+
+impl CompiledFormulaPropertySchema {
+    #[must_use]
+    pub fn get(&self, id: &FormulaPropertyId) -> Option<&CompiledFormulaProperty> {
+        self.properties.get(id)
+    }
+
+    #[must_use]
+    pub fn get_slot(&self, slot: FormulaPropertySlotId) -> Option<&CompiledFormulaProperty> {
+        self.properties.values().find(|property| property.slot == slot)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.properties.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.properties.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&FormulaPropertyId, &CompiledFormulaProperty)> {
+        self.properties.iter()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeSubscription {
     pub exec_node: ExecNodeId,
@@ -92,6 +133,7 @@ pub struct DebugSourceMap {
 pub struct CompiledAlchemistGraph {
     pub exec_nodes: Vec<CompiledExecNode>,
     pub topo_order: Vec<ExecNodeId>,
+    pub properties: CompiledFormulaPropertySchema,
     pub state_layout: RuntimeStateLayout,
     pub output_routes: Vec<OutputRoute>,
     pub subscriptions: Vec<RuntimeSubscription>,
@@ -116,18 +158,22 @@ impl CompileResult {
 pub struct CompileCtx<'a> {
     pub value_types: &'a ValueTypeRegistry,
     pub nodes: &'a ANodeRegistry,
+    pub properties: Option<&'a FormulaPropertySchema>,
 }
 
 #[must_use]
 pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileResult {
+    let mut diagnostics = Vec::new();
+    let compiled_properties = compile_property_schema(ctx.properties, ctx.value_types, &mut diagnostics);
     let solved = solve_types(
         graph,
         &TypeSolveCtx {
             value_types: ctx.value_types,
             nodes: ctx.nodes,
+            properties: ctx.properties,
         },
     );
-    let mut diagnostics = solved.diagnostics;
+    diagnostics.extend(solved.diagnostics);
     validate_exposed_surface(&graph.exposed, graph, &mut diagnostics);
     if has_errors(&diagnostics) {
         return CompileResult {
@@ -201,12 +247,7 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
             .map(|socket| value_slots[&(*node_id, socket.clone())])
             .collect();
         let operation = if instance.enabled {
-            match ctx
-                .nodes
-                .get(&instance.type_id)
-                .expect("type solving guarantees a registered declaration")
-                .compile_operation(instance, &resolved.signature)
-            {
+            match compile_node_operation(instance, &resolved.signature, ctx, &compiled_properties) {
                 Ok(operation) => operation,
                 Err(diagnostic) => {
                     diagnostics.push(diagnostic);
@@ -241,6 +282,7 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         compiled: Some(Arc::new(CompiledAlchemistGraph {
             exec_nodes,
             topo_order,
+            properties: compiled_properties,
             state_layout: RuntimeStateLayout {
                 ranges,
                 state_slot_count,
@@ -252,6 +294,103 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         })),
         diagnostics,
     }
+}
+
+fn compile_property_schema(
+    schema: Option<&FormulaPropertySchema>,
+    value_types: &ValueTypeRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledFormulaPropertySchema {
+    let Some(schema) = schema else {
+        return CompiledFormulaPropertySchema::default();
+    };
+    let mut properties = IndexMap::with_capacity(schema.properties.len());
+    for (index, (id, declaration)) in schema.iter().enumerate() {
+        if id != &declaration.id {
+            diagnostics.push(Diagnostic::error(
+                "property_schema_id_mismatch",
+                format!(
+                    "property schema key `{id}` does not match declaration id `{}`",
+                    declaration.id
+                ),
+                DiagnosticOrigin::Graph,
+            ));
+        }
+        if !value_types.contains(&declaration.value_type) {
+            diagnostics.push(Diagnostic::error(
+                "unknown_property_value_type",
+                format!(
+                    "property `{id}` declares unknown value type `{}`",
+                    declaration.value_type
+                ),
+                DiagnosticOrigin::Graph,
+            ));
+        }
+        let actual = declaration.default_value.value_type();
+        if actual != declaration.value_type {
+            diagnostics.push(Diagnostic::error(
+                "invalid_property_default_type",
+                format!(
+                    "property `{id}` default has type `{actual}`, expected `{}`",
+                    declaration.value_type
+                ),
+                DiagnosticOrigin::Graph,
+            ));
+        }
+        properties.insert(
+            id.clone(),
+            CompiledFormulaProperty {
+                id: id.clone(),
+                slot: FormulaPropertySlotId::new(index as u32),
+                value_type: declaration.value_type.clone(),
+                default_value: declaration.default_value.clone(),
+            },
+        );
+    }
+    CompiledFormulaPropertySchema { properties }
+}
+
+fn compile_node_operation(
+    instance: &crate::ANodeInstance,
+    resolved: &ResolvedANodeSignature,
+    ctx: &CompileCtx<'_>,
+    properties: &CompiledFormulaPropertySchema,
+) -> Result<CompiledNodeOperation, Diagnostic> {
+    if instance.type_id.as_str() == "property" {
+        return compile_property_operation(instance, properties);
+    }
+    ctx.nodes
+        .get(&instance.type_id)
+        .expect("type solving guarantees a registered declaration")
+        .compile_operation(instance, resolved)
+}
+
+fn compile_property_operation(
+    instance: &crate::ANodeInstance,
+    properties: &CompiledFormulaPropertySchema,
+) -> Result<CompiledNodeOperation, Diagnostic> {
+    let Some(property_id) = property_id_from_config(instance) else {
+        return Err(Diagnostic::error(
+            "missing_property_id",
+            "property node is missing a stable property_id",
+            DiagnosticOrigin::Node(instance.id),
+        ));
+    };
+    let Some(property) = properties.get(&property_id) else {
+        return Err(Diagnostic::error(
+            "missing_property_declaration",
+            format!("property node references missing property `{property_id}`"),
+            DiagnosticOrigin::Node(instance.id),
+        ));
+    };
+    Ok(CompiledNodeOperation::ReadProperty(property.slot))
+}
+
+fn property_id_from_config(instance: &crate::ANodeInstance) -> Option<FormulaPropertyId> {
+    let RuntimeValue::String(value) = instance.config.get("property_id")? else {
+        return None;
+    };
+    (!value.is_empty()).then(|| FormulaPropertyId::new(value.as_ref()))
 }
 
 fn disabled_operation(signature: &ResolvedANodeSignature, value_types: &ValueTypeRegistry) -> CompiledNodeOperation {
@@ -386,6 +525,7 @@ fn input_default(instance: &crate::ANodeInstance, socket: &SocketId, ctx: &Compi
     let signature = declaration.signature(
         &crate::SignatureCtx {
             value_types: ctx.value_types,
+            properties: ctx.properties,
         },
         instance,
         &instance.type_bindings,

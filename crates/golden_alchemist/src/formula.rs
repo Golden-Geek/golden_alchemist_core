@@ -1,8 +1,9 @@
 use indexmap::IndexMap;
 
 use crate::{
-    ANodeFieldPath, ANodeId, AlchemistGraph, ContextDimensionId, Diagnostic, FormulaId, ParamUiHints, RuntimeValue,
-    StableRef, SurfaceContributionId, SurfaceItemId, SurfaceSectionId, ValueTypeSpec,
+    ANodeFieldPath, ANodeId, AlchemistGraph, ContextDimensionId, Diagnostic, FormulaId, FormulaPropertyId,
+    ParamUiHints, RuntimeValue, StableRef, SurfaceContributionId, SurfaceItemId, SurfaceSectionId, ValueTypeId,
+    ValueTypeSpec,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -10,6 +11,45 @@ use crate::{
 pub struct FormulaRef {
     pub id: FormulaId,
     pub version: u32,
+}
+
+pub type PropertyUiHints = ParamUiHints;
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FormulaPropertyDecl {
+    pub id: FormulaPropertyId,
+    pub label: String,
+    pub description: Option<String>,
+    pub value_type: ValueTypeId,
+    pub default_value: RuntimeValue,
+    pub ui: PropertyUiHints,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FormulaPropertySchema {
+    pub properties: IndexMap<FormulaPropertyId, FormulaPropertyDecl>,
+}
+
+impl FormulaPropertySchema {
+    pub fn insert(&mut self, declaration: FormulaPropertyDecl) -> Option<FormulaPropertyDecl> {
+        self.properties.insert(declaration.id.clone(), declaration)
+    }
+
+    #[must_use]
+    pub fn get(&self, id: &FormulaPropertyId) -> Option<&FormulaPropertyDecl> {
+        self.properties.get(id)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.properties.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&FormulaPropertyId, &FormulaPropertyDecl)> {
+        self.properties.iter()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -119,6 +159,7 @@ pub struct AlchemistFormula {
     pub description: Option<String>,
     pub tags: Vec<String>,
     pub graph: AlchemistGraph,
+    pub properties: FormulaPropertySchema,
     pub surface: FormulaSurface,
     pub context_contract: FormulaContextContract,
     pub migrations: Vec<FormulaMigration>,
