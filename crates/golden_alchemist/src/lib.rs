@@ -44,8 +44,9 @@ pub use registry::{
     ValueTypeRegistry, ValueTypeUiDescriptor,
 };
 pub use runtime::{
-    AlchemistMemory, AlchemistRuntime, CompiledNodeEvaluator, DebugCaptureSink, DebugValueSample, EvaluationCtx,
-    EvaluationFrame, NodeEvaluation, RuntimeContextFrame, RuntimeDiagnostic, RuntimeEvent, RuntimeInputSnapshot,
+    AlchemistMemory, AlchemistRuntime, AxisSet, CompiledNodeEvaluator, ContextAxisId, ContextItemId, ContextKey,
+    ContextKeyPart, ContextValuePath, DebugCaptureSink, DebugValueSample, EvaluationCtx, EvaluationFrame,
+    LaneRuntimePool, NodeEvaluation, RuntimeContextFrame, RuntimeDiagnostic, RuntimeEvent, RuntimeInputSnapshot,
     RuntimeIntent, RuntimeOutput, RuntimePropertyFrame, RuntimePropertyFrameError, RuntimeRegistries,
     evaluate_compiled_graph, evaluate_compiled_graph_stateless,
 };

@@ -1,13 +1,13 @@
 use std::time::Duration;
 
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 use crate::{
-    ANodeInstance, ANodeTypeId, AlchemistGraph, AlchemistMemory, AlchemistRuntime, ColorValue, CompileCtx,
+    ANodeInstance, ANodeTypeId, AlchemistGraph, AlchemistMemory, AlchemistRuntime, ColorValue, CompileCtx, ContextKey,
     DebugCaptureSink, EvaluationCtx, EvaluationFrame, FormulaPropertyDecl, FormulaPropertyId, FormulaPropertySchema,
-    InputSocketRef, InputValueSource, OutputSocketRef, RuntimeContextFrame, RuntimeInputSnapshot, RuntimePropertyFrame,
-    RuntimeRegistries, RuntimeValue, SocketId, TriggerValue, TypeBindingSource, TypeVar, ValueTypeId,
-    ValueTypeRegistry, compile_graph, evaluate_compiled_graph, primitive_node_registry,
+    InputSocketRef, InputValueSource, LaneRuntimePool, OutputSocketRef, RuntimeContextFrame, RuntimeInputSnapshot,
+    RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SocketId, TriggerValue, TypeBindingSource, TypeVar,
+    ValueTypeId, ValueTypeRegistry, compile_graph, evaluate_compiled_graph, primitive_node_registry,
 };
 
 fn node(type_id: &str) -> ANodeInstance {
@@ -107,7 +107,7 @@ fn evaluate_compiled_graph_uses_supplied_memory() {
         value_types: &value_types,
     };
     let inputs = RuntimeInputSnapshot::default();
-    let context = RuntimeContextFrame;
+    let context = RuntimeContextFrame::default_lane();
 
     let first_ctx = EvaluationCtx {
         logical_tick: 1,
@@ -179,6 +179,53 @@ fn stateless_graph_has_no_persistent_state_memory() {
     assert!(memory.is_stateless());
     assert_eq!(memory.state_len(), 0);
     assert_eq!(memory.value_len(), 1);
+}
+
+#[test]
+fn stateless_lane_pool_allocates_no_persistent_memory() {
+    let mut graph = AlchemistGraph::new();
+    graph.add_node(constant(RuntimeValue::Float(1.0))).unwrap();
+    let compiled = compile_with_properties(&graph, &FormulaPropertySchema::default());
+    let mut lanes = LaneRuntimePool::for_graph(&compiled);
+
+    assert!(lanes.is_stateless());
+    assert!(
+        lanes
+            .memory_for_key(ContextKey::single("device", "a"), &compiled)
+            .is_none()
+    );
+    assert_eq!(lanes.memory_count(), 0);
+}
+
+#[test]
+fn stateful_lane_pool_is_sparse_and_keyed_by_stable_context() {
+    let mut graph = AlchemistGraph::new();
+    let source = graph.add_node(constant(RuntimeValue::Bool(true))).unwrap();
+    let edge = graph.add_node(node("trigger_on_off")).unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(source, "value"),
+            InputSocketRef::new(edge, "value"),
+        )
+        .unwrap();
+    let compiled = compile_with_properties(&graph, &FormulaPropertySchema::default());
+    let mut lanes = LaneRuntimePool::for_graph(&compiled);
+    let a = ContextKey::single("device", "a");
+    let b = ContextKey::single("device", "b");
+
+    assert!(!lanes.is_stateless());
+    assert_eq!(lanes.memory_count(), 0);
+    assert!(lanes.memory_for_key(a.clone(), &compiled).is_some());
+    assert_eq!(lanes.memory_count(), 1);
+    assert!(lanes.memory_for_key(a, &compiled).is_some());
+    assert_eq!(lanes.memory_count(), 1);
+    assert!(lanes.memory_for_key(b.clone(), &compiled).is_some());
+    assert_eq!(lanes.memory_count(), 2);
+
+    let mut live_keys = IndexSet::new();
+    live_keys.insert(b);
+    lanes.retain_keys(&live_keys);
+    assert_eq!(lanes.memory_count(), 1);
 }
 
 #[test]

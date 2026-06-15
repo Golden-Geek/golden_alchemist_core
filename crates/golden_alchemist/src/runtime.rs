@@ -1,10 +1,169 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
 
+use indexmap::{IndexMap, IndexSet};
+use smallvec::SmallVec;
+use smol_str::SmolStr;
+
 use crate::{
     ColorValue, CompiledAlchemistGraph, CompiledFormulaPropertySchema, CompiledNodeOperation, ExecNodeId,
     FormulaPropertyId, FormulaPropertySlotId, InputValueSource, RuntimeValue, StableRef, TriggerValue, ValueSlotId,
     ValueTypeId, ValueTypeRegistry,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ContextAxisId(SmolStr);
+
+impl ContextAxisId {
+    #[must_use]
+    pub fn new(id: impl Into<SmolStr>) -> Self {
+        Self(id.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl From<&str> for ContextAxisId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for ContextAxisId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<SmolStr> for ContextAxisId {
+    fn from(value: SmolStr) -> Self {
+        Self::new(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ContextItemId(SmolStr);
+
+impl ContextItemId {
+    #[must_use]
+    pub fn new(id: impl Into<SmolStr>) -> Self {
+        Self(id.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl From<&str> for ContextItemId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for ContextItemId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<SmolStr> for ContextItemId {
+    fn from(value: SmolStr) -> Self {
+        Self::new(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ContextKeyPart {
+    pub axis: ContextAxisId,
+    pub item: ContextItemId,
+}
+
+impl ContextKeyPart {
+    #[must_use]
+    pub fn new(axis: impl Into<ContextAxisId>, item: impl Into<ContextItemId>) -> Self {
+        Self {
+            axis: axis.into(),
+            item: item.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ContextKey {
+    pub parts: SmallVec<[ContextKeyPart; 4]>,
+}
+
+impl ContextKey {
+    #[must_use]
+    pub fn default_lane() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn new(parts: impl IntoIterator<Item = ContextKeyPart>) -> Self {
+        Self {
+            parts: parts.into_iter().collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn single(axis: impl Into<ContextAxisId>, item: impl Into<ContextItemId>) -> Self {
+        Self::new([ContextKeyPart::new(axis, item)])
+    }
+
+    #[must_use]
+    pub fn is_default_lane(&self) -> bool {
+        self.parts.is_empty()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.parts.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.parts.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ContextKeyPart> {
+        self.parts.iter()
+    }
+}
+
+pub type AxisSet = IndexSet<ContextAxisId>;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ContextValuePath {
+    pub segments: SmallVec<[SmolStr; 4]>,
+}
+
+impl ContextValuePath {
+    #[must_use]
+    pub fn new<I, S>(segments: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<SmolStr>,
+    {
+        Self {
+            segments: segments.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeEvent {
@@ -168,7 +327,80 @@ pub enum RuntimePropertyFrameError {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RuntimeContextFrame;
+pub struct RuntimeContextFrame {
+    context_key: ContextKey,
+}
+
+impl RuntimeContextFrame {
+    #[must_use]
+    pub fn default_lane() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn new(context_key: ContextKey) -> Self {
+        Self { context_key }
+    }
+
+    #[must_use]
+    pub fn context_key(&self) -> &ContextKey {
+        &self.context_key
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum LaneRuntimePool {
+    #[default]
+    Stateless,
+    Stateful(IndexMap<ContextKey, AlchemistMemory>),
+}
+
+impl LaneRuntimePool {
+    #[must_use]
+    pub fn for_graph(compiled: &CompiledAlchemistGraph) -> Self {
+        if compiled.state_layout.state_slot_count == 0 {
+            Self::Stateless
+        } else {
+            Self::Stateful(IndexMap::new())
+        }
+    }
+
+    #[must_use]
+    pub fn is_stateless(&self) -> bool {
+        matches!(self, Self::Stateless)
+    }
+
+    #[must_use]
+    pub fn memory_count(&self) -> usize {
+        match self {
+            Self::Stateless => 0,
+            Self::Stateful(lanes) => lanes.len(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        if let Self::Stateful(lanes) = self {
+            lanes.clear();
+        }
+    }
+
+    pub fn retain_keys(&mut self, keys: &IndexSet<ContextKey>) {
+        if let Self::Stateful(lanes) = self {
+            lanes.retain(|key, _| keys.contains(key));
+        }
+    }
+
+    pub fn memory_for_key(
+        &mut self,
+        key: ContextKey,
+        compiled: &CompiledAlchemistGraph,
+    ) -> Option<&mut AlchemistMemory> {
+        match self {
+            Self::Stateless => None,
+            Self::Stateful(lanes) => Some(lanes.entry(key).or_insert_with(|| AlchemistMemory::for_graph(compiled))),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct DebugCaptureSink {
@@ -263,7 +495,7 @@ impl AlchemistRuntime {
         }
         self.evaluating = true;
         let mut debug = DebugCaptureSink::default();
-        let context = RuntimeContextFrame;
+        let context = RuntimeContextFrame::default_lane();
         let output = evaluate_compiled_graph(
             &self.compiled,
             &mut self.memory,

@@ -15,6 +15,7 @@ golden_core_integration = []
 indexmap.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+smallvec.workspace = true
 smol_str.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
