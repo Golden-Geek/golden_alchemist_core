@@ -440,7 +440,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             PrimitiveNodeKind::ConvertToColor => convert_to_color_signature(instance),
             PrimitiveNodeKind::ExtractColor => extract_color_signature(instance),
             PrimitiveNodeKind::Concatenate => ANodeSignature {
-                inputs: numbered_inputs("part", "Part", input_count(instance, 2), TypeConstraint::Any),
+                inputs: numbered_inputs("part", "Part", input_count(instance, 2), exact("string")),
                 outputs: vec![OutputSocketDecl::new("result", "Result", exact("string"))],
                 ..ANodeSignature::default()
             },
