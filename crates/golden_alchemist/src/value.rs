@@ -114,6 +114,7 @@ pub enum RuntimeValue {
     Vec3([f64; 3]),
     Color(ColorValue),
     Duration(Duration),
+    Array(Vec<RuntimeValue>),
     Ref(StableRef),
     Extension(ExtensionValue),
 }
@@ -132,6 +133,7 @@ impl RuntimeValue {
             Self::Vec3(_) => ValueTypeId::new("vec3"),
             Self::Color(_) => ValueTypeId::new("color"),
             Self::Duration(_) => ValueTypeId::new("duration"),
+            Self::Array(_) => ValueTypeId::new("value_array"),
             Self::Ref(value) => value.value_type.clone(),
             Self::Extension(value) => value.value_type.clone(),
         }
@@ -152,6 +154,10 @@ impl RuntimeValue {
             "vec3" => Self::Vec3(self.to_vec3_lossy()),
             "color" => Self::Color(self.to_color_lossy()),
             "duration" => Self::Duration(Duration::from_secs_f64(self.to_float_lossy().max(0.0))),
+            "value_array" => Self::Array(match self {
+                Self::Array(values) => values.clone(),
+                _ => vec![self.clone()],
+            }),
             _ => {
                 return Err(format!("cannot convert `{}` to `{target}`", self.value_type()));
             }
@@ -217,6 +223,7 @@ impl RuntimeValue {
             Self::Vec3(value) => value.iter().any(|component| *component != 0.0),
             Self::Color(value) => value.red != 0.0 || value.green != 0.0 || value.blue != 0.0 || value.alpha != 0.0,
             Self::Duration(value) => !value.is_zero(),
+            Self::Array(value) => !value.is_empty(),
             Self::Ref(value) => !value.stable_id.is_empty(),
             Self::Extension(value) => !value.payload.is_empty(),
         }
@@ -241,6 +248,7 @@ impl RuntimeValue {
             Self::Vec3(value) => value[0],
             Self::Color(value) => f64::from(value.red),
             Self::Duration(value) => value.as_secs_f64(),
+            Self::Array(value) => value.first().map_or(0.0, RuntimeValue::to_float_lossy),
             Self::Ref(_) | Self::Extension(_) => 0.0,
         }
     }
@@ -257,6 +265,11 @@ impl RuntimeValue {
             Self::Vec3(value) => format!("{},{},{}", value[0], value[1], value[2]),
             Self::Color(value) => format!("{},{},{},{}", value.red, value.green, value.blue, value.alpha),
             Self::Duration(value) => value.as_secs_f64().to_string(),
+            Self::Array(values) => values
+                .iter()
+                .map(RuntimeValue::to_string_lossy)
+                .collect::<Vec<_>>()
+                .join(","),
             Self::Ref(value) => value.stable_id.to_string(),
             Self::Extension(value) => value.payload.iter().map(|byte| format!("{byte:02x}")).collect(),
         }
@@ -424,6 +437,7 @@ pub enum ValueStorageKind {
     InlineVec3,
     InlineColor,
     Duration,
+    Array,
     StableRef,
     Extension,
 }

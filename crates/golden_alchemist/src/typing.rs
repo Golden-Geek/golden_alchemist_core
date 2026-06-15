@@ -552,7 +552,17 @@ fn constraint_accepts(constraint: &TypeConstraint, value_type: &ValueTypeId, reg
 fn is_primitive(value_type: &ValueTypeId) -> bool {
     matches!(
         value_type.as_str(),
-        "unit" | "bool" | "trigger" | "int" | "float" | "string" | "vec2" | "vec3" | "color" | "duration"
+        "unit"
+            | "bool"
+            | "trigger"
+            | "int"
+            | "float"
+            | "string"
+            | "vec2"
+            | "vec3"
+            | "color"
+            | "duration"
+            | "value_array"
     )
 }
 

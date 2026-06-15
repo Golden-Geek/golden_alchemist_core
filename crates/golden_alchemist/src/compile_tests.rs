@@ -23,10 +23,13 @@ fn compiler_builds_dense_schedule_and_memory_layout() {
     let mut constant = node("constant");
     constant.config.set("value", RuntimeValue::Float(2.0));
     let constant = graph.add_node(constant).unwrap();
-    let add = graph.add_node(node("add")).unwrap();
-    let edge = graph.add_node(node("edge")).unwrap();
+    let add = graph.add_node(node("math")).unwrap();
+    let delay = graph.add_node(node("delay_one_tick")).unwrap();
     graph
-        .connect(OutputSocketRef::new(constant, "value"), InputSocketRef::new(add, "a"))
+        .connect(
+            OutputSocketRef::new(constant, "value"),
+            InputSocketRef::new(add, "value1"),
+        )
         .unwrap();
 
     let result = compile(&graph);
@@ -36,20 +39,26 @@ fn compiler_builds_dense_schedule_and_memory_layout() {
     assert_eq!(compiled.topo_order.len(), 3);
     assert_eq!(compiled.exec_nodes[0].exec_id.index(), 0);
     assert_eq!(compiled.exec_nodes[1].exec_id.index(), 1);
-    assert_eq!(compiled.debug_map.exec_to_authored, vec![constant, add, edge]);
+    assert_eq!(compiled.debug_map.exec_to_authored, vec![constant, add, delay]);
     assert_eq!(compiled.state_layout.state_slot_count, 1);
 }
 
 #[test]
 fn cycle_without_delay_is_reported() {
     let mut graph = AlchemistGraph::new();
-    let first = graph.add_node(node("add")).unwrap();
-    let second = graph.add_node(node("add")).unwrap();
+    let first = graph.add_node(node("math")).unwrap();
+    let second = graph.add_node(node("math")).unwrap();
     graph
-        .connect(OutputSocketRef::new(first, "result"), InputSocketRef::new(second, "a"))
+        .connect(
+            OutputSocketRef::new(first, "result"),
+            InputSocketRef::new(second, "value1"),
+        )
         .unwrap();
     graph
-        .connect(OutputSocketRef::new(second, "result"), InputSocketRef::new(first, "a"))
+        .connect(
+            OutputSocketRef::new(second, "result"),
+            InputSocketRef::new(first, "value1"),
+        )
         .unwrap();
 
     let result = compile(&graph);
@@ -66,13 +75,13 @@ fn cycle_without_delay_is_reported() {
 #[test]
 fn delay_node_allows_feedback() {
     let mut graph = AlchemistGraph::new();
-    let add = graph.add_node(node("add")).unwrap();
+    let add = graph.add_node(node("math")).unwrap();
     let delay = graph.add_node(node("delay_one_tick")).unwrap();
     graph
         .connect(OutputSocketRef::new(add, "result"), InputSocketRef::new(delay, "value"))
         .unwrap();
     graph
-        .connect(OutputSocketRef::new(delay, "value"), InputSocketRef::new(add, "a"))
+        .connect(OutputSocketRef::new(delay, "value"), InputSocketRef::new(add, "value1"))
         .unwrap();
 
     let result = compile(&graph);

@@ -76,5 +76,5 @@ mod tests;
 mod typing_tests;
 pub use compile::{
     CompileCtx, CompileResult, CompiledAlchemistGraph, CompiledExecNode, CompiledNodeOperation, DebugSourceMap,
-    InputValueSource, OutputRoute, RuntimeStateLayout, RuntimeSubscription, compile_graph,
+    DisabledOutput, InputValueSource, OutputRoute, RuntimeStateLayout, RuntimeSubscription, compile_graph,
 };

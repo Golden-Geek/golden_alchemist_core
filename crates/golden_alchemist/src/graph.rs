@@ -47,6 +47,8 @@ pub struct ANodeInstance {
     pub id: ANodeId,
     pub type_id: ANodeTypeId,
     pub label: String,
+    #[cfg_attr(feature = "serde", serde(default = "default_node_enabled"))]
+    pub enabled: bool,
     pub config: ANodeConfig,
     pub input_defaults: IndexMap<SocketId, RuntimeValue>,
     pub type_bindings: TypeBindings,
@@ -61,6 +63,7 @@ impl ANodeInstance {
             id: ANodeId::new(),
             type_id,
             label: label.into(),
+            enabled: true,
             config: ANodeConfig::default(),
             input_defaults: IndexMap::new(),
             type_bindings: TypeBindings::default(),
@@ -68,6 +71,10 @@ impl ANodeInstance {
             ui: ANodeUiState::default(),
         }
     }
+}
+
+const fn default_node_enabled() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

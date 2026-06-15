@@ -164,12 +164,24 @@ impl AlchemistRuntime {
             );
             match result {
                 Ok(values) if values.len() == node.outputs.len() => {
+                    let output_values = values.clone();
                     for (slot, value) in node.outputs.iter().zip(values) {
                         self.memory.values[slot.index()] = value.clone();
                         output.debug_samples.push(DebugValueSample {
                             exec_node: *exec_id,
                             output_slot: *slot,
                             value,
+                            logical_tick: ctx.logical_tick,
+                        });
+                    }
+                    if node.log_enabled {
+                        output.intents.push(RuntimeIntent {
+                            kind: Arc::from("debug.log"),
+                            target: None,
+                            payload: RuntimeValue::String(Arc::from(format!(
+                                "node {:?} inputs={:?} outputs={:?}",
+                                node.authored_id, inputs, output_values
+                            ))),
                             logical_tick: ctx.logical_tick,
                         });
                     }
@@ -239,6 +251,16 @@ fn evaluate_operation(
     mut evaluation: NodeEvaluation<'_, '_>,
 ) -> Result<Vec<RuntimeValue>, String> {
     match operation {
+        CompiledNodeOperation::Disabled { outputs } => Ok(outputs
+            .iter()
+            .map(|output| {
+                output
+                    .input_index
+                    .and_then(|input_index| evaluation.inputs.get(input_index))
+                    .cloned()
+                    .unwrap_or_else(|| output.default_value.clone())
+            })
+            .collect()),
         CompiledNodeOperation::Constant(value) => Ok(vec![value.clone()]),
         CompiledNodeOperation::Add => {
             let [left, right] = require_inputs::<2>(evaluation.inputs)?;

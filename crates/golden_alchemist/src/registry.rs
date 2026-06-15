@@ -342,5 +342,12 @@ fn primitive_descriptors() -> Vec<ValueTypeDescriptor> {
         .with_conversion(ValueTypeId::new("vec2"), ConversionKind::ScalarBroadcast)
         .with_conversion(ValueTypeId::new("vec3"), ConversionKind::ScalarBroadcast)
         .with_conversion(ValueTypeId::new("color"), ConversionKind::ScalarBroadcast),
+        ValueTypeDescriptor::new(
+            ValueTypeId::new("value_array"),
+            "Value Array",
+            ValueStorageKind::Array,
+            || RuntimeValue::Array(Vec::new()),
+        )
+        .with_conversion(ValueTypeId::new("string"), ConversionKind::Lossy),
     ]
 }

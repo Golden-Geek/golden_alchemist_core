@@ -81,6 +81,7 @@ pub struct ANodeConfigFieldDecl {
     pub label: String,
     pub description: Option<String>,
     pub editor: Option<String>,
+    pub enum_options: Vec<(SmolStr, String)>,
     pub type_variable: Option<TypeVar>,
     pub type_options: Vec<ValueTypeId>,
     pub default_value: RuntimeValue,
@@ -94,6 +95,7 @@ impl ANodeConfigFieldDecl {
             label: label.into(),
             description: None,
             editor: None,
+            enum_options: Vec::new(),
             type_variable: None,
             type_options: Vec::new(),
             default_value,
@@ -109,6 +111,18 @@ impl ANodeConfigFieldDecl {
     #[must_use]
     pub fn with_editor(mut self, editor: impl Into<String>) -> Self {
         self.editor = Some(editor.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_enum_options(
+        mut self,
+        options: impl IntoIterator<Item = (impl Into<SmolStr>, impl Into<String>)>,
+    ) -> Self {
+        self.enum_options = options
+            .into_iter()
+            .map(|(id, label)| (id.into(), label.into()))
+            .collect();
         self
     }
 
@@ -154,6 +168,9 @@ pub trait ANodeDeclaration: Send + Sync {
     }
     fn config_fields(&self) -> Vec<ANodeConfigFieldDecl> {
         Vec::new()
+    }
+    fn config_fields_for(&self, _instance: &ANodeInstance) -> Vec<ANodeConfigFieldDecl> {
+        self.config_fields()
     }
     fn signature(&self, ctx: &SignatureCtx<'_>, instance: &ANodeInstance, bindings: &TypeBindings) -> ANodeSignature;
     fn compile_operation(

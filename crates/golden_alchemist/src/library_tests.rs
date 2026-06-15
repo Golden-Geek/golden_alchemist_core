@@ -21,16 +21,32 @@ fn primitive_catalog_contains_every_declaration() {
     let registry = primitive_node_registry();
     for id in [
         "constant",
-        "add",
+        "math",
+        "function",
+        "remap",
+        "smooth_filter",
+        "one_minus",
+        "inverse",
+        "negate",
+        "speed",
+        "counter",
+        "lfo",
+        "noise_generator",
+        "metronome",
+        "coordinate_system",
+        "angle_conversion",
+        "gradient_sampler",
+        "convert_to_color",
+        "extract_color",
+        "concatenate",
+        "convert_to_string",
+        "split",
+        "boolean_operation",
         "compare",
-        "bool_and",
-        "bool_or",
-        "bool_not",
-        "edge",
+        "trigger_on_off",
         "gate",
-        "map_range",
-        "clamp",
         "delay_one_tick",
+        "debug_value",
         "debug_log",
     ] {
         assert!(registry.get(&ANodeTypeId::new(id)).is_some(), "{id}");
@@ -58,8 +74,8 @@ fn constant_signature_uses_configured_value_type() {
 }
 
 #[test]
-fn add_signature_shares_named_generic_and_defaults_to_float() {
-    let signature = signature(PrimitiveNodeKind::Add);
+fn math_signature_shares_named_generic_and_defaults_to_float() {
+    let signature = signature(PrimitiveNodeKind::Math);
     let expected = TypeConstraint::Generic(TypeVar::new("TNumeric"));
 
     assert_eq!(signature.inputs[0].constraint, expected);
@@ -79,9 +95,10 @@ fn add_signature_shares_named_generic_and_defaults_to_float() {
 fn forceable_math_value_type_options_derive_from_signature_constraint() {
     let value_types = ValueTypeRegistry::with_primitives();
     for kind in [
-        PrimitiveNodeKind::Add,
-        PrimitiveNodeKind::MapRange,
-        PrimitiveNodeKind::Clamp,
+        PrimitiveNodeKind::Math,
+        PrimitiveNodeKind::OneMinus,
+        PrimitiveNodeKind::Inverse,
+        PrimitiveNodeKind::Negate,
     ] {
         let declaration = PrimitiveNodeDeclaration::new(kind);
         let fields = declaration.config_fields();
@@ -125,23 +142,51 @@ macro_rules! signature_test {
     };
 }
 
+signature_test!(math_signature_is_declared, Math, 2, 1);
+signature_test!(function_signature_is_declared, Function, 1, 1);
+signature_test!(remap_signature_is_declared, Remap, 5, 1);
+signature_test!(smooth_filter_signature_is_declared, SmoothFilter, 1, 1);
+signature_test!(one_minus_signature_is_declared, OneMinus, 1, 1);
+signature_test!(inverse_signature_is_declared, Inverse, 1, 1);
+signature_test!(negate_signature_is_declared, Negate, 1, 1);
+signature_test!(speed_signature_is_declared, Speed, 1, 1);
+signature_test!(counter_signature_is_declared, Counter, 3, 1);
+signature_test!(lfo_signature_is_declared, Lfo, 0, 1);
+signature_test!(noise_signature_is_declared, NoiseGenerator, 1, 1);
+signature_test!(metronome_signature_is_declared, Metronome, 1, 2);
+signature_test!(coordinate_system_signature_is_declared, CoordinateSystem, 1, 1);
+signature_test!(angle_conversion_signature_is_declared, AngleConversion, 1, 1);
+signature_test!(gradient_sampler_signature_is_declared, GradientSampler, 1, 1);
+signature_test!(convert_to_color_signature_is_declared, ConvertToColor, 4, 1);
+signature_test!(extract_color_signature_is_declared, ExtractColor, 1, 4);
+signature_test!(concatenate_signature_is_declared, Concatenate, 2, 1);
+signature_test!(convert_to_string_signature_is_declared, ConvertToString, 1, 1);
+signature_test!(split_signature_is_declared, Split, 1, 1);
+signature_test!(boolean_operation_signature_is_declared, BooleanOperation, 2, 1);
 signature_test!(compare_signature_is_declared, Compare, 2, 1);
-signature_test!(bool_and_signature_is_declared, BoolAnd, 2, 1);
-signature_test!(bool_or_signature_is_declared, BoolOr, 2, 1);
-signature_test!(bool_not_signature_is_declared, BoolNot, 1, 1);
-signature_test!(edge_signature_is_declared, Edge, 1, 1);
+signature_test!(trigger_on_off_signature_is_declared, TriggerOnOff, 1, 2);
 signature_test!(gate_signature_is_declared, Gate, 2, 1);
-signature_test!(map_range_signature_is_declared, MapRange, 5, 1);
-signature_test!(clamp_signature_is_declared, Clamp, 3, 1);
 signature_test!(delay_signature_is_declared, DelayOneTick, 1, 1);
+signature_test!(debug_value_signature_is_declared, DebugValue, 1, 1);
 signature_test!(debug_log_signature_is_declared, DebugLog, 1, 0);
 
 #[test]
 fn stateful_and_effect_nodes_are_explicit() {
-    assert_eq!(
-        PrimitiveNodeDeclaration::new(PrimitiveNodeKind::Edge).execution_kind(),
-        ExecutionKind::Stateful
-    );
+    for kind in [
+        PrimitiveNodeKind::SmoothFilter,
+        PrimitiveNodeKind::Speed,
+        PrimitiveNodeKind::Counter,
+        PrimitiveNodeKind::Lfo,
+        PrimitiveNodeKind::NoiseGenerator,
+        PrimitiveNodeKind::Metronome,
+        PrimitiveNodeKind::TriggerOnOff,
+        PrimitiveNodeKind::DelayOneTick,
+    ] {
+        assert_eq!(
+            PrimitiveNodeDeclaration::new(kind).execution_kind(),
+            ExecutionKind::Stateful
+        );
+    }
     assert_eq!(
         PrimitiveNodeDeclaration::new(PrimitiveNodeKind::DebugLog).execution_kind(),
         ExecutionKind::EffectEmitter

@@ -80,10 +80,10 @@ fn assert_resolved_socket_types(
 }
 
 #[test]
-fn add_defaults_to_float() {
+fn math_defaults_to_float() {
     let mut graph = AlchemistGraph::new();
     let add = graph
-        .add_node(ANodeInstance::new(ANodeTypeId::new("add"), "Add"))
+        .add_node(ANodeInstance::new(ANodeTypeId::new("math"), "Math"))
         .unwrap();
     let result = solve(
         &graph,
@@ -99,16 +99,16 @@ fn add_defaults_to_float() {
 }
 
 #[test]
-fn vec3_connection_reshapes_add_inputs_and_output() {
+fn vec3_connection_reshapes_math_inputs_and_output() {
     let mut graph = AlchemistGraph::new();
     let source = graph.add_node(constant(RuntimeValue::Vec3([1.0, 2.0, 3.0]))).unwrap();
     let add = graph
-        .add_node(ANodeInstance::new(ANodeTypeId::new("add"), "Add"))
+        .add_node(ANodeInstance::new(ANodeTypeId::new("math"), "Math"))
         .unwrap();
     graph
         .connect(
             crate::OutputSocketRef::new(source, "value"),
-            crate::InputSocketRef::new(add, "a"),
+            crate::InputSocketRef::new(add, "value1"),
         )
         .unwrap();
 
@@ -120,7 +120,7 @@ fn vec3_connection_reshapes_add_inputs_and_output() {
     let signature = &result.graph.nodes[&add].signature;
 
     assert!(!result.has_errors(), "{:?}", result.diagnostics);
-    for socket in ["a", "b"] {
+    for socket in ["value1", "value2"] {
         assert_eq!(
             signature.inputs[&crate::SocketId::new(socket)].value_type,
             Some(ValueTypeId::new("vec3"))
@@ -138,18 +138,18 @@ fn first_generic_input_decides_numeric_node_type() {
     let vec3_source = graph.add_node(constant(RuntimeValue::Vec3([1.0, 2.0, 3.0]))).unwrap();
     let float_source = graph.add_node(constant(RuntimeValue::Float(1.0))).unwrap();
     let add = graph
-        .add_node(ANodeInstance::new(ANodeTypeId::new("add"), "Add"))
+        .add_node(ANodeInstance::new(ANodeTypeId::new("math"), "Math"))
         .unwrap();
     graph
         .connect(
             crate::OutputSocketRef::new(vec3_source, "value"),
-            crate::InputSocketRef::new(add, "b"),
+            crate::InputSocketRef::new(add, "value2"),
         )
         .unwrap();
     graph
         .connect(
             crate::OutputSocketRef::new(float_source, "value"),
-            crate::InputSocketRef::new(add, "a"),
+            crate::InputSocketRef::new(add, "value1"),
         )
         .unwrap();
 
@@ -160,7 +160,7 @@ fn first_generic_input_decides_numeric_node_type() {
     );
 
     assert!(!result.has_errors(), "{:?}", result.diagnostics);
-    assert_resolved_socket_types(&result, add, &["a", "b"], &["result"], "float");
+    assert_resolved_socket_types(&result, add, &["value1", "value2"], &["result"], "float");
 }
 
 #[test]
@@ -188,12 +188,12 @@ fn numeric_node_keeps_supported_type_for_convertible_non_numeric_input() {
     let mut graph = AlchemistGraph::new();
     let source = graph.add_node(constant(RuntimeValue::String("12.5".into()))).unwrap();
     let add = graph
-        .add_node(ANodeInstance::new(ANodeTypeId::new("add"), "Add"))
+        .add_node(ANodeInstance::new(ANodeTypeId::new("math"), "Math"))
         .unwrap();
     graph
         .connect(
             crate::OutputSocketRef::new(source, "value"),
-            crate::InputSocketRef::new(add, "a"),
+            crate::InputSocketRef::new(add, "value1"),
         )
         .unwrap();
 
@@ -204,28 +204,34 @@ fn numeric_node_keeps_supported_type_for_convertible_non_numeric_input() {
     );
 
     assert!(!result.has_errors(), "{:?}", result.diagnostics);
-    assert_resolved_socket_types(&result, add, &["a", "b"], &["result"], "float");
+    assert_resolved_socket_types(&result, add, &["value1", "value2"], &["result"], "float");
 }
 
 #[test]
 fn numeric_generic_nodes_infer_each_supported_connected_type() {
     let specs = [
         NodeSocketSpec {
-            type_id: "add",
-            source_input: "a",
-            inputs: &["a", "b"],
+            type_id: "math",
+            source_input: "value1",
+            inputs: &["value1", "value2"],
             outputs: &["result"],
         },
         NodeSocketSpec {
-            type_id: "map_range",
+            type_id: "one_minus",
             source_input: "value",
-            inputs: &["value", "in_min", "in_max", "out_min", "out_max"],
+            inputs: &["value"],
             outputs: &["result"],
         },
         NodeSocketSpec {
-            type_id: "clamp",
+            type_id: "inverse",
             source_input: "value",
-            inputs: &["value", "minimum", "maximum"],
+            inputs: &["value"],
+            outputs: &["result"],
+        },
+        NodeSocketSpec {
+            type_id: "negate",
+            source_input: "value",
+            inputs: &["value"],
             outputs: &["result"],
         },
     ];
@@ -303,7 +309,7 @@ fn open_generic_nodes_infer_each_connected_primitive_type() {
 fn forced_float_accepts_vec3_connection_with_coercion() {
     let mut graph = AlchemistGraph::new();
     let source = graph.add_node(constant(RuntimeValue::Vec3([1.0, 2.0, 3.0]))).unwrap();
-    let mut add_node = ANodeInstance::new(ANodeTypeId::new("add"), "Add");
+    let mut add_node = ANodeInstance::new(ANodeTypeId::new("math"), "Math");
     add_node.forced_type_bindings.insert(
         TypeVar::new("TNumeric"),
         ValueTypeId::new("float"),
@@ -313,7 +319,7 @@ fn forced_float_accepts_vec3_connection_with_coercion() {
     graph
         .connect(
             crate::OutputSocketRef::new(source, "value"),
-            crate::InputSocketRef::new(add, "a"),
+            crate::InputSocketRef::new(add, "value1"),
         )
         .unwrap();
 
@@ -325,7 +331,7 @@ fn forced_float_accepts_vec3_connection_with_coercion() {
 
     assert!(!result.has_errors(), "{:?}", result.diagnostics);
     let signature = &result.graph.nodes[&add].signature;
-    for socket in ["a", "b"] {
+    for socket in ["value1", "value2"] {
         assert_eq!(
             signature.inputs[&crate::SocketId::new(socket)].value_type,
             Some(ValueTypeId::new("float"))

@@ -4,8 +4,8 @@ use indexmap::IndexMap;
 
 use crate::{
     ANodeId, ANodeRegistry, AlchemistGraph, CompiledNodeEvaluator, Diagnostic, DiagnosticOrigin, DiagnosticSeverity,
-    ExecNodeId, ExecutionKind, ExposedSurface, RuntimeValue, SocketId, TypeSolveCtx, ValueComponent, ValueSlotId,
-    ValueTypeId, ValueTypeRegistry, component_value_type, solve_types,
+    ExecNodeId, ExecutionKind, ExposedSurface, ResolvedANodeSignature, RuntimeValue, SocketId, TypeSolveCtx,
+    ValueComponent, ValueSlotId, ValueTypeId, ValueTypeRegistry, component_value_type, solve_types,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -30,6 +30,7 @@ pub enum InputValueSource {
 
 #[derive(Clone, Debug)]
 pub enum CompiledNodeOperation {
+    Disabled { outputs: Vec<DisabledOutput> },
     Constant(RuntimeValue),
     Add,
     Compare,
@@ -46,6 +47,12 @@ pub enum CompiledNodeOperation {
 }
 
 #[derive(Clone, Debug)]
+pub struct DisabledOutput {
+    pub input_index: Option<usize>,
+    pub default_value: RuntimeValue,
+}
+
+#[derive(Clone, Debug)]
 pub struct CompiledExecNode {
     pub exec_id: ExecNodeId,
     pub authored_id: ANodeId,
@@ -54,6 +61,7 @@ pub struct CompiledExecNode {
     pub inputs: Vec<InputValueSource>,
     pub outputs: Vec<ValueSlotId>,
     pub state_range: Range<usize>,
+    pub log_enabled: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -164,7 +172,7 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
     for (node_id, instance) in &graph.nodes {
         let exec_id = authored_to_exec[node_id];
         let resolved = &solved.graph.nodes[node_id];
-        let state_size = usize::from(resolved.execution_kind == ExecutionKind::Stateful);
+        let state_size = usize::from(instance.enabled && resolved.execution_kind == ExecutionKind::Stateful);
         let state_range = state_slot_count..state_slot_count + state_size;
         state_slot_count += state_size;
         ranges.push(state_range.clone());
@@ -192,17 +200,21 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
             .keys()
             .map(|socket| value_slots[&(*node_id, socket.clone())])
             .collect();
-        let operation = match ctx
-            .nodes
-            .get(&instance.type_id)
-            .expect("type solving guarantees a registered declaration")
-            .compile_operation(instance, &resolved.signature)
-        {
-            Ok(operation) => operation,
-            Err(diagnostic) => {
-                diagnostics.push(diagnostic);
-                continue;
+        let operation = if instance.enabled {
+            match ctx
+                .nodes
+                .get(&instance.type_id)
+                .expect("type solving guarantees a registered declaration")
+                .compile_operation(instance, &resolved.signature)
+            {
+                Ok(operation) => operation,
+                Err(diagnostic) => {
+                    diagnostics.push(diagnostic);
+                    continue;
+                }
             }
+        } else {
+            disabled_operation(&resolved.signature, ctx.value_types)
         };
         exec_nodes.push(CompiledExecNode {
             exec_id,
@@ -212,6 +224,7 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
             inputs,
             outputs,
             state_range,
+            log_enabled: instance.enabled && matches!(instance.config.get("log"), Some(RuntimeValue::Bool(true))),
         });
     }
     if has_errors(&diagnostics) {
@@ -239,6 +252,32 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         })),
         diagnostics,
     }
+}
+
+fn disabled_operation(signature: &ResolvedANodeSignature, value_types: &ValueTypeRegistry) -> CompiledNodeOperation {
+    let bypass_input = disabled_bypass_input(signature);
+    let outputs = signature
+        .outputs
+        .values()
+        .map(|output| DisabledOutput {
+            input_index: bypass_input,
+            default_value: output
+                .value_type
+                .as_ref()
+                .and_then(|value_type| value_types.default_value(value_type))
+                .unwrap_or(RuntimeValue::Unit),
+        })
+        .collect();
+    CompiledNodeOperation::Disabled { outputs }
+}
+
+fn disabled_bypass_input(signature: &ResolvedANodeSignature) -> Option<usize> {
+    if signature.inputs.len() != 1 || signature.outputs.len() != 1 {
+        return None;
+    }
+    let input_type = signature.inputs.values().next()?.value_type.as_ref()?;
+    let output_type = signature.outputs.values().next()?.value_type.as_ref()?;
+    (input_type == output_type).then_some(0)
 }
 
 fn input_source(
