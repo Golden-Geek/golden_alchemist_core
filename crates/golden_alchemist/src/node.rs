@@ -17,6 +17,23 @@ pub enum ExecutionKind {
     Subgraph,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum NodeStateLayout {
+    Stateless,
+    RuntimeValues(usize),
+}
+
+impl NodeStateLayout {
+    #[must_use]
+    pub const fn slot_count(&self) -> usize {
+        match self {
+            Self::Stateless => 0,
+            Self::RuntimeValues(count) => *count,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InputSocketDecl {
@@ -175,6 +192,12 @@ pub trait ANodeDeclaration: Send + Sync {
         self.config_fields()
     }
     fn signature(&self, ctx: &SignatureCtx<'_>, instance: &ANodeInstance, bindings: &TypeBindings) -> ANodeSignature;
+    fn state_layout(&self, _instance: &ANodeInstance, _resolved: &ResolvedANodeSignature) -> NodeStateLayout {
+        match self.execution_kind() {
+            ExecutionKind::Stateful => NodeStateLayout::RuntimeValues(1),
+            _ => NodeStateLayout::Stateless,
+        }
+    }
     fn compile_operation(
         &self,
         instance: &ANodeInstance,

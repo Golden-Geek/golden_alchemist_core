@@ -36,8 +36,8 @@ pub use ids::{
 };
 pub use library::{PrimitiveNodeDeclaration, PrimitiveNodeKind, primitive_node_registry, register_primitive_nodes};
 pub use node::{
-    ANodeConfigFieldDecl, ANodeDeclaration, ANodeSignature, ExecutionKind, InputSocketDecl, OutputSocketDecl,
-    SignatureCtx,
+    ANodeConfigFieldDecl, ANodeDeclaration, ANodeSignature, ExecutionKind, InputSocketDecl, NodeStateLayout,
+    OutputSocketDecl, SignatureCtx,
 };
 pub use registry::{
     ANodeRegistry, ConversionKind, ConversionRule, FacetDescriptor, FacetRegistry, RegistryError, ValueTypeDescriptor,

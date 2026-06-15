@@ -304,7 +304,15 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
     for (node_id, instance) in &graph.nodes {
         let exec_id = authored_to_exec[node_id];
         let resolved = &solved.graph.nodes[node_id];
-        let state_size = usize::from(instance.enabled && resolved.execution_kind == ExecutionKind::Stateful);
+        let declaration = ctx
+            .nodes
+            .get(&instance.type_id)
+            .expect("type solving guarantees a registered declaration");
+        let state_size = if instance.enabled {
+            declaration.state_layout(instance, &resolved.signature).slot_count()
+        } else {
+            0
+        };
         let state_range = state_slot_count..state_slot_count + state_size;
         state_slot_count += state_size;
         ranges.push(state_range.clone());
