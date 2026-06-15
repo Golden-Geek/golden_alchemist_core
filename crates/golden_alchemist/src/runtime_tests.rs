@@ -3,10 +3,11 @@ use std::time::Duration;
 use indexmap::IndexMap;
 
 use crate::{
-    ANodeInstance, ANodeTypeId, AlchemistGraph, AlchemistRuntime, ColorValue, CompileCtx, EvaluationCtx,
-    FormulaPropertyDecl, FormulaPropertyId, FormulaPropertySchema, InputSocketRef, InputValueSource, OutputSocketRef,
-    RuntimeInputSnapshot, RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SocketId, TriggerValue,
-    TypeBindingSource, TypeVar, ValueTypeId, ValueTypeRegistry, compile_graph, primitive_node_registry,
+    ANodeInstance, ANodeTypeId, AlchemistGraph, AlchemistMemory, AlchemistRuntime, ColorValue, CompileCtx,
+    DebugCaptureSink, EvaluationCtx, EvaluationFrame, FormulaPropertyDecl, FormulaPropertyId, FormulaPropertySchema,
+    InputSocketRef, InputValueSource, OutputSocketRef, RuntimeContextFrame, RuntimeInputSnapshot, RuntimePropertyFrame,
+    RuntimeRegistries, RuntimeValue, SocketId, TriggerValue, TypeBindingSource, TypeVar, ValueTypeId,
+    ValueTypeRegistry, compile_graph, evaluate_compiled_graph, primitive_node_registry,
 };
 
 fn node(type_id: &str) -> ANodeInstance {
@@ -85,6 +86,99 @@ fn evaluate(runtime: &mut AlchemistRuntime, logical_tick: u64) -> crate::Runtime
         inputs: &RuntimeInputSnapshot::default(),
         registries: &registries,
     })
+}
+
+#[test]
+fn evaluate_compiled_graph_uses_supplied_memory() {
+    let mut graph = AlchemistGraph::new();
+    let source = graph.add_node(constant(RuntimeValue::Bool(true))).unwrap();
+    let edge = graph.add_node(node("trigger_on_off")).unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(source, "value"),
+            InputSocketRef::new(edge, "value"),
+        )
+        .unwrap();
+    let compiled = compile_with_properties(&graph, &FormulaPropertySchema::default());
+    let mut memory = AlchemistMemory::for_graph(&compiled);
+    let properties = RuntimePropertyFrame::from_defaults(&compiled.properties);
+    let value_types = ValueTypeRegistry::with_primitives();
+    let registries = RuntimeRegistries {
+        value_types: &value_types,
+    };
+    let inputs = RuntimeInputSnapshot::default();
+    let context = RuntimeContextFrame;
+
+    let first_ctx = EvaluationCtx {
+        logical_tick: 1,
+        delta_time: Duration::from_millis(16),
+        events: &[],
+        inputs: &inputs,
+        registries: &registries,
+    };
+    let mut first_debug = DebugCaptureSink::default();
+    let first = evaluate_compiled_graph(
+        &compiled,
+        &mut memory,
+        EvaluationFrame {
+            ctx: &first_ctx,
+            properties: &properties,
+            context: &context,
+            debug: &mut first_debug,
+        },
+    );
+
+    let second_ctx = EvaluationCtx {
+        logical_tick: 2,
+        delta_time: Duration::from_millis(16),
+        events: &[],
+        inputs: &inputs,
+        registries: &registries,
+    };
+    let mut second_debug = DebugCaptureSink::default();
+    let second = evaluate_compiled_graph(
+        &compiled,
+        &mut memory,
+        EvaluationFrame {
+            ctx: &second_ctx,
+            properties: &properties,
+            context: &context,
+            debug: &mut second_debug,
+        },
+    );
+
+    let first_trigger = first
+        .debug_samples
+        .iter()
+        .find_map(|sample| match sample.value {
+            RuntimeValue::Trigger(value) => Some(value),
+            _ => None,
+        })
+        .unwrap();
+    let second_trigger = second
+        .debug_samples
+        .iter()
+        .find_map(|sample| match sample.value {
+            RuntimeValue::Trigger(value) => Some(value),
+            _ => None,
+        })
+        .unwrap();
+
+    assert!(first_trigger.fired);
+    assert!(!second_trigger.fired);
+    assert_eq!(first_debug.samples(), first.debug_samples.as_slice());
+}
+
+#[test]
+fn stateless_graph_has_no_persistent_state_memory() {
+    let mut graph = AlchemistGraph::new();
+    graph.add_node(constant(RuntimeValue::Float(1.0))).unwrap();
+    let compiled = compile_with_properties(&graph, &FormulaPropertySchema::default());
+    let memory = AlchemistMemory::for_graph(&compiled);
+
+    assert!(memory.is_stateless());
+    assert_eq!(memory.state_len(), 0);
+    assert_eq!(memory.value_len(), 1);
 }
 
 #[test]

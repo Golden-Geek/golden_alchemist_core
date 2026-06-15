@@ -88,6 +88,21 @@ impl AlchemistMemory {
     pub fn value(&self, slot: ValueSlotId) -> Option<&RuntimeValue> {
         self.values.get(slot.index())
     }
+
+    #[must_use]
+    pub fn value_len(&self) -> usize {
+        self.values.len()
+    }
+
+    #[must_use]
+    pub fn state_len(&self) -> usize {
+        self.states.len()
+    }
+
+    #[must_use]
+    pub fn is_stateless(&self) -> bool {
+        self.states.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,6 +165,37 @@ pub enum RuntimePropertyFrameError {
         expected: ValueTypeId,
         actual: ValueTypeId,
     },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeContextFrame;
+
+#[derive(Clone, Debug, Default)]
+pub struct DebugCaptureSink {
+    samples: Vec<DebugValueSample>,
+}
+
+impl DebugCaptureSink {
+    pub fn capture(&mut self, sample: DebugValueSample) {
+        self.samples.push(sample);
+    }
+
+    #[must_use]
+    pub fn samples(&self) -> &[DebugValueSample] {
+        &self.samples
+    }
+
+    #[must_use]
+    pub fn into_samples(self) -> Vec<DebugValueSample> {
+        self.samples
+    }
+}
+
+pub struct EvaluationFrame<'a, 'ctx> {
+    pub ctx: &'a EvaluationCtx<'ctx>,
+    pub properties: &'a RuntimePropertyFrame,
+    pub context: &'a RuntimeContextFrame,
+    pub debug: &'a mut DebugCaptureSink,
 }
 
 pub struct NodeEvaluation<'a, 'ctx> {
@@ -216,74 +262,19 @@ impl AlchemistRuntime {
             };
         }
         self.evaluating = true;
-        let mut output = RuntimeOutput::default();
+        let mut debug = DebugCaptureSink::default();
+        let context = RuntimeContextFrame;
+        let output = evaluate_compiled_graph(
+            &self.compiled,
+            &mut self.memory,
+            EvaluationFrame {
+                ctx,
+                properties: &self.properties,
+                context: &context,
+                debug: &mut debug,
+            },
+        );
         for exec_id in &self.compiled.topo_order {
-            let node = &self.compiled.exec_nodes[exec_id.index()];
-            let inputs = node
-                .inputs
-                .iter()
-                .map(|source| runtime_input_value(source, &self.memory, ctx.registries.value_types))
-                .collect::<Result<Vec<_>, _>>();
-            let inputs = match inputs {
-                Ok(inputs) => inputs,
-                Err(message) => {
-                    output.diagnostics.push(RuntimeDiagnostic {
-                        exec_node: *exec_id,
-                        message,
-                    });
-                    self.execution_counts[exec_id.index()] += 1;
-                    continue;
-                }
-            };
-            let state = &mut self.memory.states[node.state_range.clone()];
-            let result = evaluate_operation(
-                &node.operation,
-                NodeEvaluation {
-                    exec_node: *exec_id,
-                    ctx,
-                    inputs: &inputs,
-                    properties: &self.properties,
-                    state,
-                    intents: &mut output.intents,
-                },
-            );
-            match result {
-                Ok(values) if values.len() == node.outputs.len() => {
-                    let output_values = values.clone();
-                    for (slot, value) in node.outputs.iter().zip(values) {
-                        self.memory.values[slot.index()] = value.clone();
-                        output.debug_samples.push(DebugValueSample {
-                            exec_node: *exec_id,
-                            output_slot: *slot,
-                            value,
-                            logical_tick: ctx.logical_tick,
-                        });
-                    }
-                    if node.log_enabled {
-                        output.intents.push(RuntimeIntent {
-                            kind: Arc::from("debug.log"),
-                            target: None,
-                            payload: RuntimeValue::String(Arc::from(format!(
-                                "node {:?} inputs={:?} outputs={:?}",
-                                node.authored_id, inputs, output_values
-                            ))),
-                            logical_tick: ctx.logical_tick,
-                        });
-                    }
-                }
-                Ok(values) => output.diagnostics.push(RuntimeDiagnostic {
-                    exec_node: *exec_id,
-                    message: format!(
-                        "node produced {} output(s), expected {}",
-                        values.len(),
-                        node.outputs.len()
-                    ),
-                }),
-                Err(message) => output.diagnostics.push(RuntimeDiagnostic {
-                    exec_node: *exec_id,
-                    message,
-                }),
-            }
             self.execution_counts[exec_id.index()] += 1;
         }
         self.evaluating = false;
@@ -294,6 +285,92 @@ impl AlchemistRuntime {
     pub fn execution_count(&self, exec_node: ExecNodeId) -> u64 {
         self.execution_counts[exec_node.index()]
     }
+}
+
+pub fn evaluate_compiled_graph(
+    compiled: &CompiledAlchemistGraph,
+    memory: &mut AlchemistMemory,
+    frame: EvaluationFrame<'_, '_>,
+) -> RuntimeOutput {
+    let mut output = RuntimeOutput::default();
+    for exec_id in &compiled.topo_order {
+        let node = &compiled.exec_nodes[exec_id.index()];
+        let inputs = node
+            .inputs
+            .iter()
+            .map(|source| runtime_input_value(source, memory, frame.ctx.registries.value_types))
+            .collect::<Result<Vec<_>, _>>();
+        let inputs = match inputs {
+            Ok(inputs) => inputs,
+            Err(message) => {
+                output.diagnostics.push(RuntimeDiagnostic {
+                    exec_node: *exec_id,
+                    message,
+                });
+                continue;
+            }
+        };
+        let state = &mut memory.states[node.state_range.clone()];
+        let result = evaluate_operation(
+            &node.operation,
+            NodeEvaluation {
+                exec_node: *exec_id,
+                ctx: frame.ctx,
+                inputs: &inputs,
+                properties: frame.properties,
+                state,
+                intents: &mut output.intents,
+            },
+        );
+        match result {
+            Ok(values) if values.len() == node.outputs.len() => {
+                let output_values = values.clone();
+                for (slot, value) in node.outputs.iter().zip(values) {
+                    memory.values[slot.index()] = value.clone();
+                    let sample = DebugValueSample {
+                        exec_node: *exec_id,
+                        output_slot: *slot,
+                        value,
+                        logical_tick: frame.ctx.logical_tick,
+                    };
+                    frame.debug.capture(sample.clone());
+                    output.debug_samples.push(sample);
+                }
+                if node.log_enabled {
+                    output.intents.push(RuntimeIntent {
+                        kind: Arc::from("debug.log"),
+                        target: None,
+                        payload: RuntimeValue::String(Arc::from(format!(
+                            "node {:?} inputs={:?} outputs={:?}",
+                            node.authored_id, inputs, output_values
+                        ))),
+                        logical_tick: frame.ctx.logical_tick,
+                    });
+                }
+            }
+            Ok(values) => output.diagnostics.push(RuntimeDiagnostic {
+                exec_node: *exec_id,
+                message: format!(
+                    "node produced {} output(s), expected {}",
+                    values.len(),
+                    node.outputs.len()
+                ),
+            }),
+            Err(message) => output.diagnostics.push(RuntimeDiagnostic {
+                exec_node: *exec_id,
+                message,
+            }),
+        }
+    }
+    output
+}
+
+pub fn evaluate_compiled_graph_stateless(
+    compiled: &CompiledAlchemistGraph,
+    frame: EvaluationFrame<'_, '_>,
+) -> RuntimeOutput {
+    let mut memory = AlchemistMemory::for_graph(compiled);
+    evaluate_compiled_graph(compiled, &mut memory, frame)
 }
 
 fn runtime_input_value(

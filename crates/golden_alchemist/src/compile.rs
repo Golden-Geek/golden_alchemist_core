@@ -1,12 +1,17 @@
-use std::{collections::VecDeque, ops::Range, sync::Arc};
+use std::{
+    collections::{VecDeque, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    ops::Range,
+    sync::Arc,
+};
 
 use indexmap::IndexMap;
 
 use crate::{
-    ANodeId, ANodeRegistry, AlchemistGraph, CompiledNodeEvaluator, Diagnostic, DiagnosticOrigin, DiagnosticSeverity,
-    ExecNodeId, ExecutionKind, ExposedSurface, FormulaPropertyId, FormulaPropertySchema, FormulaPropertySlotId,
-    ResolvedANodeSignature, RuntimeValue, SocketId, TypeSolveCtx, ValueComponent, ValueSlotId, ValueTypeId,
-    ValueTypeRegistry, component_value_type, solve_types,
+    ANodeId, ANodeRegistry, AlchemistFormula, AlchemistGraph, CompiledNodeEvaluator, Diagnostic, DiagnosticOrigin,
+    DiagnosticSeverity, ExecNodeId, ExecutionKind, ExposedSurface, FormulaId, FormulaPropertyId, FormulaPropertySchema,
+    FormulaPropertySlotId, FormulaRef, ResolvedANodeSignature, RuntimeValue, SocketId, TypeSolveCtx, ValueComponent,
+    ValueSlotId, ValueTypeId, ValueTypeRegistry, component_value_type, solve_types,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -153,6 +158,87 @@ impl CompileResult {
             .iter()
             .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FormulaAnalysis {
+    pub has_stateful_nodes: bool,
+    pub state_slot_count: usize,
+    pub value_slot_count: usize,
+}
+
+impl FormulaAnalysis {
+    #[must_use]
+    pub fn from_compiled_graph(graph: &CompiledAlchemistGraph) -> Self {
+        Self {
+            has_stateful_nodes: graph.state_layout.state_slot_count > 0,
+            state_slot_count: graph.state_layout.state_slot_count,
+            value_slot_count: graph.state_layout.value_slot_count,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CompiledAlchemistFormula {
+    pub formula_ref: FormulaRef,
+    pub graph: Arc<CompiledAlchemistGraph>,
+    pub properties: CompiledFormulaPropertySchema,
+    pub analysis: FormulaAnalysis,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl CompiledAlchemistFormula {
+    #[must_use]
+    pub fn new(formula_ref: FormulaRef, graph: Arc<CompiledAlchemistGraph>, diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            formula_ref,
+            properties: graph.properties.clone(),
+            analysis: FormulaAnalysis::from_compiled_graph(&graph),
+            graph,
+            diagnostics,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FormulaCompileKey {
+    pub formula_id: FormulaId,
+    pub formula_version: u32,
+    pub graph_revision: u64,
+    pub property_schema_hash: u64,
+    pub node_registry_hash: u64,
+    pub value_type_registry_hash: u64,
+}
+
+impl FormulaCompileKey {
+    #[must_use]
+    pub fn from_formula(
+        formula: &AlchemistFormula,
+        graph_revision: u64,
+        node_registry_hash: u64,
+        value_type_registry_hash: u64,
+    ) -> Self {
+        Self {
+            formula_id: formula.id.clone(),
+            formula_version: formula.version,
+            graph_revision,
+            property_schema_hash: property_schema_hash(&formula.properties),
+            node_registry_hash,
+            value_type_registry_hash,
+        }
+    }
+}
+
+fn property_schema_hash(schema: &FormulaPropertySchema) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for (id, declaration) in schema.iter() {
+        id.hash(&mut hasher);
+        declaration.label.hash(&mut hasher);
+        declaration.description.hash(&mut hasher);
+        declaration.value_type.hash(&mut hasher);
+        format!("{:?}", declaration.default_value).hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 pub struct CompileCtx<'a> {

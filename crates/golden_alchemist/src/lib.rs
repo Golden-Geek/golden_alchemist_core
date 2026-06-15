@@ -44,9 +44,10 @@ pub use registry::{
     ValueTypeRegistry, ValueTypeUiDescriptor,
 };
 pub use runtime::{
-    AlchemistMemory, AlchemistRuntime, CompiledNodeEvaluator, DebugValueSample, EvaluationCtx, NodeEvaluation,
-    RuntimeDiagnostic, RuntimeEvent, RuntimeInputSnapshot, RuntimeIntent, RuntimeOutput, RuntimePropertyFrame,
-    RuntimePropertyFrameError, RuntimeRegistries,
+    AlchemistMemory, AlchemistRuntime, CompiledNodeEvaluator, DebugCaptureSink, DebugValueSample, EvaluationCtx,
+    EvaluationFrame, NodeEvaluation, RuntimeContextFrame, RuntimeDiagnostic, RuntimeEvent, RuntimeInputSnapshot,
+    RuntimeIntent, RuntimeOutput, RuntimePropertyFrame, RuntimePropertyFrameError, RuntimeRegistries,
+    evaluate_compiled_graph, evaluate_compiled_graph_stateless,
 };
 pub use typing::{
     ResolvedANode, ResolvedANodeSignature, ResolvedGraph, ResolvedSocket, TypeBinding, TypeBindingConflict,
@@ -77,7 +78,8 @@ mod tests;
 #[cfg(test)]
 mod typing_tests;
 pub use compile::{
-    CompileCtx, CompileResult, CompiledAlchemistGraph, CompiledExecNode, CompiledFormulaProperty,
-    CompiledFormulaPropertySchema, CompiledNodeOperation, DebugSourceMap, DisabledOutput, InputValueSource,
-    OutputRoute, RuntimeStateLayout, RuntimeSubscription, compile_graph,
+    CompileCtx, CompileResult, CompiledAlchemistFormula, CompiledAlchemistGraph, CompiledExecNode,
+    CompiledFormulaProperty, CompiledFormulaPropertySchema, CompiledNodeOperation, DebugSourceMap, DisabledOutput,
+    FormulaAnalysis, FormulaCompileKey, InputValueSource, OutputRoute, RuntimeStateLayout, RuntimeSubscription,
+    compile_graph,
 };
