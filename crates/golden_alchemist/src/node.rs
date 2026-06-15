@@ -2,7 +2,7 @@ use indexmap::IndexMap;
 use smol_str::SmolStr;
 
 use crate::{
-    ANodeInstance, ANodeTypeId, CompiledNodeOperation, Diagnostic, DiagnosticOrigin, FormulaPropertySchema,
+    ANodeInstance, ANodeTypeId, AxisSet, CompiledNodeOperation, Diagnostic, DiagnosticOrigin, FormulaPropertySchema,
     ResolvedANodeSignature, RuntimeValue, SocketId, TypeBindings, TypeConstraint, TypeVar, ValueStorageKind,
     ValueTypeId, ValueTypeRegistry,
 };
@@ -197,6 +197,9 @@ pub trait ANodeDeclaration: Send + Sync {
             ExecutionKind::Stateful => NodeStateLayout::RuntimeValues(1),
             _ => NodeStateLayout::Stateless,
         }
+    }
+    fn context_axes(&self, _instance: &ANodeInstance, _resolved: &ResolvedANodeSignature) -> AxisSet {
+        AxisSet::new()
     }
     fn compile_operation(
         &self,

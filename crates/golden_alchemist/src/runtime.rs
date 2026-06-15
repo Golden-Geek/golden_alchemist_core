@@ -137,6 +137,14 @@ impl ContextKey {
     pub fn iter(&self) -> impl Iterator<Item = &ContextKeyPart> {
         self.parts.iter()
     }
+
+    #[must_use]
+    pub fn project(&self, axes: &AxisSet) -> Self {
+        if axes.is_empty() {
+            return Self::default_lane();
+        }
+        Self::new(self.parts.iter().filter(|part| axes.contains(&part.axis)).cloned())
+    }
 }
 
 pub type AxisSet = IndexSet<ContextAxisId>;

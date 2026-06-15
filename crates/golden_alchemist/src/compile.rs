@@ -8,10 +8,10 @@ use std::{
 use indexmap::IndexMap;
 
 use crate::{
-    ANodeId, ANodeRegistry, AlchemistFormula, AlchemistGraph, CompiledNodeEvaluator, Diagnostic, DiagnosticOrigin,
-    DiagnosticSeverity, ExecNodeId, ExecutionKind, ExposedSurface, FormulaId, FormulaPropertyId, FormulaPropertySchema,
-    FormulaPropertySlotId, FormulaRef, ResolvedANodeSignature, RuntimeValue, SocketId, TypeSolveCtx, ValueComponent,
-    ValueSlotId, ValueTypeId, ValueTypeRegistry, component_value_type, solve_types,
+    ANodeId, ANodeRegistry, AlchemistFormula, AlchemistGraph, AxisSet, CompiledNodeEvaluator, Diagnostic,
+    DiagnosticOrigin, DiagnosticSeverity, ExecNodeId, ExecutionKind, ExposedSurface, FormulaId, FormulaPropertyId,
+    FormulaPropertySchema, FormulaPropertySlotId, FormulaRef, ResolvedANodeSignature, RuntimeValue, SocketId,
+    TypeSolveCtx, ValueComponent, ValueSlotId, ValueTypeId, ValueTypeRegistry, component_value_type, solve_types,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -134,11 +134,23 @@ pub struct DebugSourceMap {
     pub exec_to_authored: Vec<ANodeId>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FormulaAnalysis {
+    pub has_stateful_nodes: bool,
+    pub has_effect_emitters: bool,
+    pub explicit_context_axes: AxisSet,
+    pub state_axes: AxisSet,
+    pub effect_axes: AxisSet,
+    pub state_slot_count: usize,
+    pub value_slot_count: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct CompiledAlchemistGraph {
     pub exec_nodes: Vec<CompiledExecNode>,
     pub topo_order: Vec<ExecNodeId>,
     pub properties: CompiledFormulaPropertySchema,
+    pub analysis: FormulaAnalysis,
     pub state_layout: RuntimeStateLayout,
     pub output_routes: Vec<OutputRoute>,
     pub subscriptions: Vec<RuntimeSubscription>,
@@ -160,24 +172,6 @@ impl CompileResult {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FormulaAnalysis {
-    pub has_stateful_nodes: bool,
-    pub state_slot_count: usize,
-    pub value_slot_count: usize,
-}
-
-impl FormulaAnalysis {
-    #[must_use]
-    pub fn from_compiled_graph(graph: &CompiledAlchemistGraph) -> Self {
-        Self {
-            has_stateful_nodes: graph.state_layout.state_slot_count > 0,
-            state_slot_count: graph.state_layout.state_slot_count,
-            value_slot_count: graph.state_layout.value_slot_count,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct CompiledAlchemistFormula {
     pub formula_ref: FormulaRef,
@@ -193,7 +187,7 @@ impl CompiledAlchemistFormula {
         Self {
             formula_ref,
             properties: graph.properties.clone(),
-            analysis: FormulaAnalysis::from_compiled_graph(&graph),
+            analysis: graph.analysis.clone(),
             graph,
             diagnostics,
         }
@@ -301,6 +295,7 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
     let mut state_slot_count = 0_usize;
     let mut ranges = Vec::with_capacity(graph.nodes.len());
     let mut exec_nodes = Vec::with_capacity(graph.nodes.len());
+    let mut direct_context_axes = vec![AxisSet::new(); graph.nodes.len()];
     for (node_id, instance) in &graph.nodes {
         let exec_id = authored_to_exec[node_id];
         let resolved = &solved.graph.nodes[node_id];
@@ -313,6 +308,9 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         } else {
             0
         };
+        if instance.enabled {
+            direct_context_axes[exec_id.index()] = declaration.context_axes(instance, &resolved.signature);
+        }
         let state_range = state_slot_count..state_slot_count + state_size;
         state_slot_count += state_size;
         ranges.push(state_range.clone());
@@ -372,11 +370,19 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
     let debug_map = DebugSourceMap {
         exec_to_authored: graph.nodes.keys().copied().collect(),
     };
+    let analysis = analyze_formula(
+        &exec_nodes,
+        &topo_order,
+        state_slot_count,
+        next_value_slot as usize,
+        &direct_context_axes,
+    );
     CompileResult {
         compiled: Some(Arc::new(CompiledAlchemistGraph {
             exec_nodes,
             topo_order,
             properties: compiled_properties,
+            analysis,
             state_layout: RuntimeStateLayout {
                 ranges,
                 state_slot_count,
@@ -387,6 +393,73 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
             debug_map,
         })),
         diagnostics,
+    }
+}
+
+fn analyze_formula(
+    exec_nodes: &[CompiledExecNode],
+    topo_order: &[ExecNodeId],
+    state_slot_count: usize,
+    value_slot_count: usize,
+    direct_context_axes: &[AxisSet],
+) -> FormulaAnalysis {
+    let mut analysis = FormulaAnalysis {
+        has_stateful_nodes: state_slot_count > 0,
+        state_slot_count,
+        value_slot_count,
+        ..FormulaAnalysis::default()
+    };
+    let mut slot_axes = vec![AxisSet::new(); value_slot_count];
+
+    for exec_id in topo_order {
+        let node = &exec_nodes[exec_id.index()];
+        let active = !matches!(node.operation, CompiledNodeOperation::Disabled { .. });
+        let mut node_axes = direct_context_axes.get(exec_id.index()).cloned().unwrap_or_default();
+        for source in &node.inputs {
+            extend_axes_from_input_source(&mut node_axes, source, &slot_axes);
+        }
+        if active {
+            analysis.explicit_context_axes.extend(
+                direct_context_axes
+                    .get(exec_id.index())
+                    .into_iter()
+                    .flat_map(|axes| axes.iter().cloned()),
+            );
+            if !node.state_range.is_empty() {
+                analysis.state_axes.extend(node_axes.iter().cloned());
+            }
+            if matches!(node.execution_kind, ExecutionKind::EffectEmitter) {
+                analysis.has_effect_emitters = true;
+                analysis.effect_axes.extend(node_axes.iter().cloned());
+            }
+        }
+        for slot in &node.outputs {
+            if let Some(axes) = slot_axes.get_mut(slot.index()) {
+                axes.extend(node_axes.iter().cloned());
+            }
+        }
+    }
+
+    analysis
+}
+
+fn extend_axes_from_input_source(target: &mut AxisSet, source: &InputValueSource, slot_axes: &[AxisSet]) {
+    match source {
+        InputValueSource::Slot(slot) => {
+            if let Some(axes) = slot_axes.get(slot.index()) {
+                target.extend(axes.iter().cloned());
+            }
+        }
+        InputValueSource::Converted { source, .. } | InputValueSource::Component { source, .. } => {
+            extend_axes_from_input_source(target, source, slot_axes);
+        }
+        InputValueSource::Composite { base, components, .. } => {
+            extend_axes_from_input_source(target, base, slot_axes);
+            for (_, source) in components {
+                extend_axes_from_input_source(target, source, slot_axes);
+            }
+        }
+        InputValueSource::Constant(_) | InputValueSource::Unset => {}
     }
 }
 
