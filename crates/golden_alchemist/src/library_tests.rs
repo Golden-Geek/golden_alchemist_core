@@ -156,7 +156,7 @@ signature_test!(speed_signature_is_declared, Speed, 1, 1);
 signature_test!(counter_signature_is_declared, Counter, 3, 1);
 signature_test!(lfo_signature_is_declared, Lfo, 0, 1);
 signature_test!(noise_signature_is_declared, NoiseGenerator, 1, 1);
-signature_test!(metronome_signature_is_declared, Metronome, 1, 2);
+signature_test!(metronome_signature_is_declared, Metronome, 0, 2);
 signature_test!(coordinate_system_signature_is_declared, CoordinateSystem, 1, 1);
 signature_test!(angle_conversion_signature_is_declared, AngleConversion, 1, 1);
 signature_test!(gradient_sampler_signature_is_declared, GradientSampler, 1, 1);
@@ -172,6 +172,17 @@ signature_test!(gate_signature_is_declared, Gate, 2, 1);
 signature_test!(delay_signature_is_declared, DelayOneTick, 1, 1);
 signature_test!(debug_value_signature_is_declared, DebugValue, 1, 1);
 signature_test!(debug_log_signature_is_declared, DebugLog, 1, 0);
+
+#[test]
+fn metronome_signature_declares_tick_and_on_outputs() {
+    let signature = signature(PrimitiveNodeKind::Metronome);
+
+    assert!(signature.inputs.is_empty());
+    assert_eq!(signature.outputs[0].id.as_str(), "tick");
+    assert_eq!(signature.outputs[0].label, "Tick");
+    assert_eq!(signature.outputs[1].id.as_str(), "on");
+    assert_eq!(signature.outputs[1].label, "On");
+}
 
 #[test]
 fn stateful_and_effect_nodes_are_explicit() {

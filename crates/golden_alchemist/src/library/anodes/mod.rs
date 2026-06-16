@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     ANodeConfigFieldDecl, ANodeDeclaration, ANodeInstance, ANodeRegistry, ANodeSignature, ANodeTypeId,
     CompiledNodeOperation, Diagnostic, ExecutionKind, InputSocketDecl, OutputSocketDecl, RegistryError,
-    ResolvedANodeSignature, RuntimeValue, SignatureCtx, TypeBindings, TypeConstraint,
+    ResolvedANodeSignature, RuntimeValue, SignatureCtx, TriggerValue, TypeBindings, TypeConstraint,
 };
 
 mod angle_conversion;
@@ -258,6 +258,21 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
         )
     }
 
+    fn process_on_input_change_only(&self, instance: &ANodeInstance) -> bool {
+        if matches!(self.kind, PrimitiveNodeKind::Counter) {
+            true
+        } else {
+            match instance.config.get(crate::PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG) {
+                Some(RuntimeValue::Bool(value)) => *value,
+                _ => self.default_process_on_input_change_only(),
+            }
+        }
+    }
+
+    fn process_on_input_change_only_configurable(&self) -> bool {
+        !matches!(self.kind, PrimitiveNodeKind::Counter)
+    }
+
     fn breaks_dependency_cycle(&self) -> bool {
         self.kind == PrimitiveNodeKind::DelayOneTick
     }
@@ -456,9 +471,11 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             }
             PrimitiveNodeKind::Counter => ANodeSignature {
                 inputs: vec![
-                    InputSocketDecl::new("add", "Add", exact("trigger")),
+                    InputSocketDecl::new("add", "Add", exact("trigger"))
+                        .with_default(RuntimeValue::Trigger(TriggerValue::default())),
                     InputSocketDecl::new("amount", "Amount", exact("float")).with_default(RuntimeValue::Float(1.0)),
-                    InputSocketDecl::new("reset", "Reset", exact("trigger")),
+                    InputSocketDecl::new("reset", "Reset", exact("trigger"))
+                        .with_default(RuntimeValue::Trigger(TriggerValue::default())),
                 ],
                 outputs: vec![OutputSocketDecl::new("count", "Count", exact("float"))],
                 ..ANodeSignature::default()
@@ -476,10 +493,9 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                 ..ANodeSignature::default()
             },
             PrimitiveNodeKind::Metronome => ANodeSignature {
-                inputs: vec![InputSocketDecl::new("tap", "Tap", exact("trigger"))],
                 outputs: vec![
                     OutputSocketDecl::new("tick", "Tick", exact("trigger")),
-                    OutputSocketDecl::new("gate", "Gate", exact("bool")),
+                    OutputSocketDecl::new("on", "On", exact("bool")),
                 ],
                 ..ANodeSignature::default()
             },

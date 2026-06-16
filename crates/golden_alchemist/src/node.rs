@@ -197,8 +197,23 @@ pub trait ANodeDeclaration: Send + Sync {
     fn default_process_on_input_change_only(&self) -> bool {
         true
     }
+    fn process_on_input_change_only_configurable(&self) -> bool {
+        true
+    }
     fn default_send_on_output_change_only(&self) -> bool {
         true
+    }
+    fn process_on_input_change_only(&self, instance: &ANodeInstance) -> bool {
+        match instance.config.get(PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG) {
+            Some(RuntimeValue::Bool(value)) => *value,
+            _ => self.default_process_on_input_change_only(),
+        }
+    }
+    fn send_on_output_change_only(&self, instance: &ANodeInstance) -> bool {
+        match instance.config.get(SEND_ON_OUTPUT_CHANGE_ONLY_CONFIG) {
+            Some(RuntimeValue::Bool(value)) => *value,
+            _ => self.default_send_on_output_change_only(),
+        }
     }
     fn signature(&self, ctx: &SignatureCtx<'_>, instance: &ANodeInstance, bindings: &TypeBindings) -> ANodeSignature;
     fn state_layout(&self, _instance: &ANodeInstance, _resolved: &ResolvedANodeSignature) -> NodeStateLayout {

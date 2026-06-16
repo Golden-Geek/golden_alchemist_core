@@ -7,9 +7,8 @@ use crate::{
     DebugCaptureMode, DebugCaptureSink, EvaluationCtx, EvaluationFrame, FormulaId, FormulaPropertyDecl,
     FormulaPropertyId, FormulaPropertySchema, InputSocketRef, InputValueSource, LaneRuntimePool, OutputPreviewStatus,
     OutputSocketRef, PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG, RuntimeContextFrame, RuntimeInputSnapshot,
-    RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SEND_ON_OUTPUT_CHANGE_ONLY_CONFIG, SocketId, TriggerValue,
-    TypeBindingSource, TypeVar, ValueTypeId, ValueTypeRegistry, compile_graph, evaluate_compiled_graph,
-    primitive_node_registry,
+    RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SocketId, TriggerValue, TypeBindingSource, TypeVar,
+    ValueTypeId, ValueTypeRegistry, compile_graph, evaluate_compiled_graph, primitive_node_registry,
 };
 
 fn node(type_id: &str) -> ANodeInstance {
@@ -430,16 +429,41 @@ fn edge_trigger_fires_once_and_preserves_state() {
 }
 
 #[test]
+fn metronome_on_output_toggles_without_tap_input() {
+    let mut graph = AlchemistGraph::new();
+    let mut metronome = node("metronome");
+    metronome.config.set("mode", RuntimeValue::String("time".into()));
+    metronome.config.set("value", RuntimeValue::Float(0.064));
+    metronome.config.set("on_ratio", RuntimeValue::Float(0.5));
+    let metronome = graph.add_node(metronome).unwrap();
+    let mut runtime = runtime(&graph);
+    let on_socket = SocketId::new("on");
+    let mut seen_on_values = Vec::new();
+
+    for logical_tick in 1..=6 {
+        let output = evaluate(&mut runtime, logical_tick);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        seen_on_values.extend(output.debug_samples.iter().filter_map(|sample| {
+            if sample.author_node_id != metronome || sample.output_socket != on_socket {
+                return None;
+            }
+            match &sample.value {
+                RuntimeValue::Bool(value) => Some(*value),
+                _ => None,
+            }
+        }));
+    }
+
+    assert!(seen_on_values.contains(&true), "{seen_on_values:?}");
+    assert!(seen_on_values.contains(&false), "{seen_on_values:?}");
+}
+
+#[test]
 fn counter_add_trigger_accumulates_default_amount() {
     let mut graph = AlchemistGraph::new();
-    let mut source_node = constant(RuntimeValue::Trigger(TriggerValue::fired(7, 1)));
-    source_node
-        .config
-        .set(PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG, RuntimeValue::Bool(false));
-    source_node
-        .config
-        .set(SEND_ON_OUTPUT_CHANGE_ONLY_CONFIG, RuntimeValue::Bool(false));
-    let source = graph.add_node(source_node).unwrap();
+    let source = graph
+        .add_node(constant(RuntimeValue::Trigger(TriggerValue::fired(7, 1))))
+        .unwrap();
     let mut counter_node = node("counter");
     counter_node
         .config
@@ -460,9 +484,13 @@ fn counter_add_trigger_accumulates_default_amount() {
         .position(|node| *node == counter)
         .map(|index| crate::ExecNodeId::new(index as u32))
         .unwrap();
+    assert!(
+        runtime.compiled.exec_nodes[counter_exec.index()].process_on_input_change_only,
+        "Counter must stay input-change driven even with stale always-process config"
+    );
 
-    let first = evaluate(&mut runtime, 1);
-    let second = evaluate(&mut runtime, 2);
+    let first = evaluate_with_capture_mode(&mut runtime, 1, DebugCaptureMode::All { history_len: 64 });
+    let second = evaluate_with_capture_mode(&mut runtime, 2, DebugCaptureMode::All { history_len: 64 });
 
     assert!(
         first
@@ -474,7 +502,8 @@ fn counter_add_trigger_accumulates_default_amount() {
         second
             .debug_samples
             .iter()
-            .any(|sample| sample.exec_node == counter_exec && sample.value == RuntimeValue::Float(2.0))
+            .all(|sample| sample.exec_node != counter_exec),
+        "Counter should not process again until an input changes"
     );
 }
 
@@ -548,13 +577,16 @@ fn log_config_emits_debug_intent_for_processed_node() {
     let mut graph = AlchemistGraph::new();
     let mut source = constant(RuntimeValue::Float(4.0));
     source.config.set("log", RuntimeValue::Bool(true));
-    graph.add_node(source).unwrap();
+    let source = graph.add_node(source).unwrap();
     let mut runtime = runtime(&graph);
 
     let output = evaluate(&mut runtime, 7);
 
     assert_eq!(output.intents.len(), 1);
     assert_eq!(output.intents[0].kind.as_ref(), "debug.log");
+    assert_eq!(output.intents[0].source_node, Some(source));
+    assert_eq!(output.intents[0].source_socket, Some(SocketId::new("value")));
+    assert_eq!(output.intents[0].payload, RuntimeValue::Float(4.0));
     assert_eq!(output.intents[0].logical_tick, 7);
 }
 
@@ -678,6 +710,57 @@ fn property_node_reads_processor_override_from_runtime_frame() {
             .debug_samples
             .iter()
             .any(|sample| sample.value == RuntimeValue::Float(2.5))
+    );
+}
+
+#[test]
+fn property_frame_change_reevaluates_property_dependents_only() {
+    let mut graph = AlchemistGraph::new();
+    let property = graph.add_node(property_node("amount")).unwrap();
+    let base = graph.add_node(constant(RuntimeValue::Float(10.0))).unwrap();
+    let unrelated = graph.add_node(constant(RuntimeValue::Float(99.0))).unwrap();
+    let add = graph.add_node(node("math")).unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(property, "value"),
+            InputSocketRef::new(add, "value1"),
+        )
+        .unwrap();
+    graph
+        .connect(OutputSocketRef::new(base, "value"), InputSocketRef::new(add, "value2"))
+        .unwrap();
+    let schema = property_schema("amount", "float", RuntimeValue::Float(1.0));
+    let compiled = compile_with_properties(&graph, &schema);
+    let mut overrides = IndexMap::new();
+    overrides.insert(FormulaPropertyId::new("amount"), RuntimeValue::Float(1.0));
+    let frame = RuntimePropertyFrame::with_overrides(&compiled.properties, &overrides).unwrap();
+    let mut runtime = AlchemistRuntime::with_property_frame(compiled.clone(), frame);
+    let first = evaluate(&mut runtime, 1);
+    assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+
+    overrides.insert(FormulaPropertyId::new("amount"), RuntimeValue::Float(2.0));
+    runtime.set_property_frame(RuntimePropertyFrame::with_overrides(&compiled.properties, &overrides).unwrap());
+    let second = evaluate(&mut runtime, 2);
+
+    assert!(second.diagnostics.is_empty(), "{:?}", second.diagnostics);
+    assert!(
+        second
+            .debug_samples
+            .iter()
+            .any(|sample| { sample.author_node_id == property && sample.value == RuntimeValue::Float(2.0) })
+    );
+    assert!(
+        second
+            .debug_samples
+            .iter()
+            .any(|sample| { sample.author_node_id == add && sample.value == RuntimeValue::Float(12.0) })
+    );
+    assert!(!second.debug_samples.iter().any(|sample| sample.author_node_id == base));
+    assert!(
+        !second
+            .debug_samples
+            .iter()
+            .any(|sample| sample.author_node_id == unrelated)
     );
 }
 

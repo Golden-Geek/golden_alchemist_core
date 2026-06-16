@@ -215,6 +215,8 @@ pub struct EvaluationCtx<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeIntent {
     pub kind: Arc<str>,
+    pub source_node: Option<ANodeId>,
+    pub source_socket: Option<SocketId>,
     pub target: Option<StableRef>,
     pub payload: RuntimeValue,
     pub logical_tick: u64,
@@ -396,6 +398,14 @@ impl AlchemistMemory {
     }
 
     #[must_use]
+    fn is_compatible_with_graph(&self, compiled: &CompiledAlchemistGraph) -> bool {
+        self.values.len() == compiled.state_layout.value_slot_count
+            && self.value_initialized.len() == compiled.state_layout.value_slot_count
+            && self.states.len() == compiled.state_layout.state_slot_count
+            && self.node_inputs.len() == compiled.exec_nodes.len()
+    }
+
+    #[must_use]
     pub fn is_stateless(&self) -> bool {
         self.states.is_empty()
     }
@@ -508,6 +518,17 @@ impl LaneRuntimePool {
     }
 
     #[must_use]
+    pub fn is_compatible_with_graph(&self, compiled: &CompiledAlchemistGraph) -> bool {
+        let needs_stateful_pool = compiled.state_layout.state_slot_count > 0 || compiled.analysis.has_input_gated_nodes;
+        match self {
+            Self::Stateless => !needs_stateful_pool,
+            Self::Stateful(lanes) => {
+                needs_stateful_pool && lanes.values().all(|memory| memory.is_compatible_with_graph(compiled))
+            }
+        }
+    }
+
+    #[must_use]
     pub fn memory_count(&self) -> usize {
         match self {
             Self::Stateless => 0,
@@ -607,6 +628,7 @@ pub struct EvaluationFrame<'a, 'ctx> {
 
 pub struct NodeEvaluation<'a, 'ctx> {
     pub exec_node: ExecNodeId,
+    pub author_node_id: ANodeId,
     pub ctx: &'a EvaluationCtx<'ctx>,
     pub inputs: &'a [RuntimeValue],
     pub properties: &'a RuntimePropertyFrame,
@@ -727,20 +749,31 @@ pub fn evaluate_compiled_graph(
                 continue;
             }
         };
+        let change_inputs = match change_detection_inputs(&node.operation, &inputs, frame.properties) {
+            Ok(change_inputs) => change_inputs,
+            Err(message) => {
+                output.diagnostics.push(RuntimeDiagnostic {
+                    exec_node: *exec_id,
+                    message,
+                });
+                continue;
+            }
+        };
         if node.process_on_input_change_only && !frame.force_process_unchanged_inputs {
             let previous_inputs = memory.node_inputs.get(exec_id.index()).and_then(Option::as_ref);
-            if previous_inputs.is_some_and(|previous| runtime_values_equivalent(previous, &inputs)) {
+            if previous_inputs.is_some_and(|previous| runtime_values_equivalent(previous, &change_inputs)) {
                 continue;
             }
         }
         if let Some(previous_inputs) = memory.node_inputs.get_mut(exec_id.index()) {
-            *previous_inputs = Some(inputs.clone());
+            *previous_inputs = Some(change_inputs);
         }
         let state = &mut memory.states[node.state_range.clone()];
         let result = evaluate_operation(
             &node.operation,
             NodeEvaluation {
                 exec_node: *exec_id,
+                author_node_id: node.authored_id,
                 ctx: frame.ctx,
                 inputs: &inputs,
                 properties: frame.properties,
@@ -786,15 +819,16 @@ pub fn evaluate_compiled_graph(
                     frame.debug.capture(sample);
                 }
                 if node.log_enabled {
-                    output.intents.push(RuntimeIntent {
-                        kind: Arc::from("debug.log"),
-                        target: None,
-                        payload: RuntimeValue::String(Arc::from(format!(
-                            "node {:?} inputs={:?} outputs={:?}",
-                            node.authored_id, inputs, output_values
-                        ))),
-                        logical_tick: frame.ctx.logical_tick,
-                    });
+                    for (output_index, value) in output_values.into_iter().enumerate() {
+                        output.intents.push(RuntimeIntent {
+                            kind: Arc::from("debug.log"),
+                            source_node: Some(node.authored_id),
+                            source_socket: node.output_sockets.get(output_index).cloned(),
+                            target: None,
+                            payload: value,
+                            logical_tick: frame.ctx.logical_tick,
+                        });
+                    }
                 }
             }
             Ok(values) => output.diagnostics.push(RuntimeDiagnostic {
@@ -813,6 +847,23 @@ pub fn evaluate_compiled_graph(
     }
     output.debug_samples = frame.debug.samples().to_vec();
     output
+}
+
+fn change_detection_inputs(
+    operation: &CompiledNodeOperation,
+    inputs: &[RuntimeValue],
+    properties: &RuntimePropertyFrame,
+) -> Result<Vec<RuntimeValue>, String> {
+    let mut change_inputs = inputs.to_vec();
+    if let CompiledNodeOperation::ReadProperty(slot) = operation {
+        change_inputs.push(
+            properties
+                .get(*slot)
+                .cloned()
+                .ok_or_else(|| format!("property slot {} is unavailable", slot.index()))?,
+        );
+    }
+    Ok(change_inputs)
 }
 
 fn runtime_values_equivalent(left: &[RuntimeValue], right: &[RuntimeValue]) -> bool {
@@ -953,6 +1004,8 @@ fn evaluate_operation(
             let [value] = require_inputs::<1>(evaluation.inputs)?;
             evaluation.intents.push(RuntimeIntent {
                 kind: Arc::from("debug.log"),
+                source_node: Some(evaluation.author_node_id),
+                source_socket: None,
                 target: None,
                 payload: value.clone(),
                 logical_tick: evaluation.ctx.logical_tick,
