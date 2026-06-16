@@ -340,12 +340,9 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                 ],
             )],
             PrimitiveNodeKind::GradientSampler => vec![
-                ANodeConfigFieldDecl::new(
-                    "gradient",
-                    "Gradient",
-                    RuntimeValue::String(Arc::from("#000000 0, #ffffff 1")),
-                )
-                .with_description("Comma-separated color stops, for example `#000000 0, #ffffff 1`."),
+                ANodeConfigFieldDecl::new("gradient", "Gradient", gradient_sampler::default_gradient_config())
+                    .with_editor("gradient")
+                    .with_description("Color stops (position, color, interpolation) edited with the gradient editor."),
             ],
             PrimitiveNodeKind::ConvertToColor | PrimitiveNodeKind::ExtractColor => {
                 vec![color_mode_config()]
@@ -600,11 +597,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             }
             PrimitiveNodeKind::GradientSampler => {
                 CompiledNodeOperation::Custom(Arc::new(gradient_sampler::GradientSamplerEval {
-                    stops: gradient_sampler::parse_gradient(&config_string(
-                        instance,
-                        "gradient",
-                        "#000000 0, #ffffff 1",
-                    )),
+                    stops: gradient_sampler::stops_from_config(instance),
                 }))
             }
             PrimitiveNodeKind::ConvertToColor => {
