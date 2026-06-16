@@ -229,14 +229,14 @@ impl RuntimeValue {
         }
     }
 
-    fn to_int_lossy(&self) -> i64 {
+    pub(crate) fn to_int_lossy(&self) -> i64 {
         match self {
             Self::Int(value) => *value,
             _ => finite_i64(self.to_float_lossy()),
         }
     }
 
-    fn to_float_lossy(&self) -> f64 {
+    pub(crate) fn to_float_lossy(&self) -> f64 {
         match self {
             Self::Unit => 0.0,
             Self::Bool(value) => f64::from(*value),
@@ -253,7 +253,7 @@ impl RuntimeValue {
         }
     }
 
-    fn to_string_lossy(&self) -> String {
+    pub(crate) fn to_string_lossy(&self) -> String {
         match self {
             Self::Unit => String::new(),
             Self::Bool(value) => value.to_string(),
@@ -275,7 +275,7 @@ impl RuntimeValue {
         }
     }
 
-    fn to_vec2_lossy(&self) -> [f64; 2] {
+    pub(crate) fn to_vec2_lossy(&self) -> [f64; 2] {
         match self {
             Self::Vec2(value) => *value,
             Self::Vec3(value) => [value[0], value[1]],
@@ -293,7 +293,7 @@ impl RuntimeValue {
         }
     }
 
-    fn to_vec3_lossy(&self) -> [f64; 3] {
+    pub(crate) fn to_vec3_lossy(&self) -> [f64; 3] {
         match self {
             Self::Vec2(value) => [value[0], value[1], 0.0],
             Self::Vec3(value) => *value,
@@ -317,7 +317,7 @@ impl RuntimeValue {
         }
     }
 
-    fn to_color_lossy(&self) -> ColorValue {
+    pub(crate) fn to_color_lossy(&self) -> ColorValue {
         match self {
             Self::Color(value) => *value,
             Self::Vec2(value) => ColorValue {
