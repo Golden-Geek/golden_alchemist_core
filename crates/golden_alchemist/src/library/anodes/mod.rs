@@ -246,6 +246,18 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
         }
     }
 
+    fn default_process_on_input_change_only(&self) -> bool {
+        !matches!(
+            self.kind,
+            PrimitiveNodeKind::SmoothFilter
+                | PrimitiveNodeKind::Speed
+                | PrimitiveNodeKind::Lfo
+                | PrimitiveNodeKind::NoiseGenerator
+                | PrimitiveNodeKind::Metronome
+                | PrimitiveNodeKind::DelayOneTick
+        )
+    }
+
     fn breaks_dependency_cycle(&self) -> bool {
         self.kind == PrimitiveNodeKind::DelayOneTick
     }

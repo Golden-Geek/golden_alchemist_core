@@ -7,6 +7,9 @@ use crate::{
     ValueTypeId, ValueTypeRegistry,
 };
 
+pub const PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG: &str = "process_on_input_change_only";
+pub const SEND_ON_OUTPUT_CHANGE_ONLY_CONFIG: &str = "send_on_output_change_only";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExecutionKind {
@@ -190,6 +193,12 @@ pub trait ANodeDeclaration: Send + Sync {
     }
     fn config_fields_for(&self, _instance: &ANodeInstance) -> Vec<ANodeConfigFieldDecl> {
         self.config_fields()
+    }
+    fn default_process_on_input_change_only(&self) -> bool {
+        true
+    }
+    fn default_send_on_output_change_only(&self) -> bool {
+        true
     }
     fn signature(&self, ctx: &SignatureCtx<'_>, instance: &ANodeInstance, bindings: &TypeBindings) -> ANodeSignature;
     fn state_layout(&self, _instance: &ANodeInstance, _resolved: &ResolvedANodeSignature) -> NodeStateLayout {

@@ -10,8 +10,9 @@ use indexmap::IndexMap;
 use crate::{
     ANodeId, ANodeRegistry, AlchemistFormula, AlchemistGraph, AxisSet, CompiledNodeEvaluator, Diagnostic,
     DiagnosticOrigin, DiagnosticSeverity, ExecNodeId, ExecutionKind, ExposedSurface, FormulaId, FormulaPropertyId,
-    FormulaPropertySchema, FormulaPropertySlotId, FormulaRef, ResolvedANodeSignature, RuntimeValue, SocketId,
-    TypeSolveCtx, ValueComponent, ValueSlotId, ValueTypeId, ValueTypeRegistry, component_value_type, solve_types,
+    FormulaPropertySchema, FormulaPropertySlotId, FormulaRef, PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG,
+    ResolvedANodeSignature, RuntimeValue, SEND_ON_OUTPUT_CHANGE_ONLY_CONFIG, SocketId, TypeSolveCtx, ValueComponent,
+    ValueSlotId, ValueTypeId, ValueTypeRegistry, component_value_type, solve_types,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +71,8 @@ pub struct CompiledExecNode {
     pub output_sockets: Vec<SocketId>,
     pub output_types: Vec<Option<ValueTypeId>>,
     pub state_range: Range<usize>,
+    pub process_on_input_change_only: bool,
+    pub send_on_output_change_only: bool,
     pub log_enabled: bool,
 }
 
@@ -140,6 +143,8 @@ pub struct DebugSourceMap {
 pub struct FormulaAnalysis {
     pub has_stateful_nodes: bool,
     pub has_effect_emitters: bool,
+    pub has_always_process_nodes: bool,
+    pub has_input_gated_nodes: bool,
     pub explicit_context_axes: AxisSet,
     pub state_axes: AxisSet,
     pub effect_axes: AxisSet,
@@ -363,6 +368,16 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
             output_sockets,
             output_types,
             state_range,
+            process_on_input_change_only: config_bool(
+                instance,
+                PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG,
+                declaration.default_process_on_input_change_only(),
+            ),
+            send_on_output_change_only: config_bool(
+                instance,
+                SEND_ON_OUTPUT_CHANGE_ONLY_CONFIG,
+                declaration.default_send_on_output_change_only(),
+            ),
             log_enabled: instance.enabled && matches!(instance.config.get("log"), Some(RuntimeValue::Bool(true))),
         });
     }
@@ -425,6 +440,11 @@ fn analyze_formula(
             extend_axes_from_input_source(&mut node_axes, source, &slot_axes);
         }
         if active {
+            if node.process_on_input_change_only {
+                analysis.has_input_gated_nodes = true;
+            } else {
+                analysis.has_always_process_nodes = true;
+            }
             analysis.explicit_context_axes.extend(
                 direct_context_axes
                     .get(exec_id.index())
@@ -447,6 +467,13 @@ fn analyze_formula(
     }
 
     analysis
+}
+
+fn config_bool(instance: &crate::ANodeInstance, field: &str, default: bool) -> bool {
+    match instance.config.get(field) {
+        Some(RuntimeValue::Bool(value)) => *value,
+        _ => default,
+    }
 }
 
 fn extend_axes_from_input_source(target: &mut AxisSet, source: &InputValueSource, slot_axes: &[AxisSet]) {

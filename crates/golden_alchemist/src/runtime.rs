@@ -364,7 +364,9 @@ pub struct RuntimeOutput {
 #[derive(Clone, Debug)]
 pub struct AlchemistMemory {
     values: Vec<RuntimeValue>,
+    value_initialized: Vec<bool>,
     states: Vec<RuntimeValue>,
+    node_inputs: Vec<Option<Vec<RuntimeValue>>>,
 }
 
 impl AlchemistMemory {
@@ -372,7 +374,9 @@ impl AlchemistMemory {
     pub fn for_graph(compiled: &CompiledAlchemistGraph) -> Self {
         Self {
             values: vec![RuntimeValue::Unit; compiled.state_layout.value_slot_count],
+            value_initialized: vec![false; compiled.state_layout.value_slot_count],
             states: vec![RuntimeValue::Unit; compiled.state_layout.state_slot_count],
+            node_inputs: vec![None; compiled.exec_nodes.len()],
         }
     }
 
@@ -491,7 +495,7 @@ pub enum LaneRuntimePool {
 impl LaneRuntimePool {
     #[must_use]
     pub fn for_graph(compiled: &CompiledAlchemistGraph) -> Self {
-        if compiled.state_layout.state_slot_count == 0 {
+        if compiled.state_layout.state_slot_count == 0 && !compiled.analysis.has_input_gated_nodes {
             Self::Stateless
         } else {
             Self::Stateful(IndexMap::new())
@@ -597,6 +601,8 @@ pub struct EvaluationFrame<'a, 'ctx> {
     pub properties: &'a RuntimePropertyFrame,
     pub context: &'a RuntimeContextFrame,
     pub debug: &'a mut DebugCaptureSink,
+    pub force_process_unchanged_inputs: bool,
+    pub capture_unchanged_outputs: bool,
 }
 
 pub struct NodeEvaluation<'a, 'ctx> {
@@ -681,6 +687,8 @@ impl AlchemistRuntime {
                 properties: &self.properties,
                 context: &context,
                 debug: &mut debug,
+                force_process_unchanged_inputs: false,
+                capture_unchanged_outputs: false,
             },
         );
         for exec_id in &self.compiled.topo_order {
@@ -719,6 +727,15 @@ pub fn evaluate_compiled_graph(
                 continue;
             }
         };
+        if node.process_on_input_change_only && !frame.force_process_unchanged_inputs {
+            let previous_inputs = memory.node_inputs.get(exec_id.index()).and_then(Option::as_ref);
+            if previous_inputs.is_some_and(|previous| runtime_values_equivalent(previous, &inputs)) {
+                continue;
+            }
+        }
+        if let Some(previous_inputs) = memory.node_inputs.get_mut(exec_id.index()) {
+            *previous_inputs = Some(inputs.clone());
+        }
         let state = &mut memory.states[node.state_range.clone()];
         let result = evaluate_operation(
             &node.operation,
@@ -735,7 +752,14 @@ pub fn evaluate_compiled_graph(
             Ok(values) if values.len() == node.outputs.len() => {
                 let output_values = values.clone();
                 for (output_index, (slot, value)) in node.outputs.iter().zip(values).enumerate() {
+                    let previous_value = memory.values.get(slot.index());
+                    let output_changed = !memory.value_initialized[slot.index()]
+                        || previous_value.is_none_or(|previous| !runtime_value_equivalent(previous, &value));
                     memory.values[slot.index()] = value.clone();
+                    memory.value_initialized[slot.index()] = true;
+                    if node.send_on_output_change_only && !output_changed && !frame.capture_unchanged_outputs {
+                        continue;
+                    }
                     let output_socket = node
                         .output_sockets
                         .get(output_index)
@@ -789,6 +813,21 @@ pub fn evaluate_compiled_graph(
     }
     output.debug_samples = frame.debug.samples().to_vec();
     output
+}
+
+fn runtime_values_equivalent(left: &[RuntimeValue], right: &[RuntimeValue]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| runtime_value_equivalent(left, right))
+}
+
+fn runtime_value_equivalent(left: &RuntimeValue, right: &RuntimeValue) -> bool {
+    match (left, right) {
+        (RuntimeValue::Trigger(left), RuntimeValue::Trigger(right)) if !left.fired && !right.fired => true,
+        _ => left == right,
+    }
 }
 
 pub fn evaluate_compiled_graph_stateless(

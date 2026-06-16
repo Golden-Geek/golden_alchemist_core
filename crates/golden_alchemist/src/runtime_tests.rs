@@ -6,9 +6,10 @@ use crate::{
     ANodeInstance, ANodeTypeId, AlchemistGraph, AlchemistMemory, AlchemistRuntime, ColorValue, CompileCtx, ContextKey,
     DebugCaptureMode, DebugCaptureSink, EvaluationCtx, EvaluationFrame, FormulaId, FormulaPropertyDecl,
     FormulaPropertyId, FormulaPropertySchema, InputSocketRef, InputValueSource, LaneRuntimePool, OutputPreviewStatus,
-    OutputSocketRef, RuntimeContextFrame, RuntimeInputSnapshot, RuntimePropertyFrame, RuntimeRegistries, RuntimeValue,
-    SocketId, TriggerValue, TypeBindingSource, TypeVar, ValueTypeId, ValueTypeRegistry, compile_graph,
-    evaluate_compiled_graph, primitive_node_registry,
+    OutputSocketRef, PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG, RuntimeContextFrame, RuntimeInputSnapshot,
+    RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SEND_ON_OUTPUT_CHANGE_ONLY_CONFIG, SocketId, TriggerValue,
+    TypeBindingSource, TypeVar, ValueTypeId, ValueTypeRegistry, compile_graph, evaluate_compiled_graph,
+    primitive_node_registry,
 };
 
 fn node(type_id: &str) -> ANodeInstance {
@@ -147,6 +148,8 @@ fn evaluate_compiled_graph_uses_supplied_memory() {
             properties: &properties,
             context: &context,
             debug: &mut first_debug,
+            force_process_unchanged_inputs: false,
+            capture_unchanged_outputs: false,
         },
     );
 
@@ -166,6 +169,8 @@ fn evaluate_compiled_graph_uses_supplied_memory() {
             properties: &properties,
             context: &context,
             debug: &mut second_debug,
+            force_process_unchanged_inputs: false,
+            capture_unchanged_outputs: false,
         },
     );
 
@@ -177,17 +182,8 @@ fn evaluate_compiled_graph_uses_supplied_memory() {
             _ => None,
         })
         .unwrap();
-    let second_trigger = second
-        .debug_samples
-        .iter()
-        .find_map(|sample| match sample.value {
-            RuntimeValue::Trigger(value) => Some(value),
-            _ => None,
-        })
-        .unwrap();
-
     assert!(first_trigger.fired);
-    assert!(!second_trigger.fired);
+    assert!(second.debug_samples.is_empty());
     assert_eq!(first_debug.samples(), first.debug_samples.as_slice());
 }
 
@@ -204,19 +200,19 @@ fn stateless_graph_has_no_persistent_state_memory() {
 }
 
 #[test]
-fn stateless_lane_pool_allocates_no_persistent_memory() {
+fn input_gated_stateless_lane_pool_keeps_process_cache() {
     let mut graph = AlchemistGraph::new();
     graph.add_node(constant(RuntimeValue::Float(1.0))).unwrap();
     let compiled = compile_with_properties(&graph, &FormulaPropertySchema::default());
     let mut lanes = LaneRuntimePool::for_graph(&compiled);
 
-    assert!(lanes.is_stateless());
+    assert!(!lanes.is_stateless());
     assert!(
         lanes
             .memory_for_key(ContextKey::single("device", "a"), &compiled)
-            .is_none()
+            .is_some()
     );
-    assert_eq!(lanes.memory_count(), 0);
+    assert_eq!(lanes.memory_count(), 1);
 }
 
 #[test]
@@ -436,10 +432,19 @@ fn edge_trigger_fires_once_and_preserves_state() {
 #[test]
 fn counter_add_trigger_accumulates_default_amount() {
     let mut graph = AlchemistGraph::new();
-    let source = graph
-        .add_node(constant(RuntimeValue::Trigger(TriggerValue::fired(7, 1))))
-        .unwrap();
-    let counter = graph.add_node(node("counter")).unwrap();
+    let mut source_node = constant(RuntimeValue::Trigger(TriggerValue::fired(7, 1)));
+    source_node
+        .config
+        .set(PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG, RuntimeValue::Bool(false));
+    source_node
+        .config
+        .set(SEND_ON_OUTPUT_CHANGE_ONLY_CONFIG, RuntimeValue::Bool(false));
+    let source = graph.add_node(source_node).unwrap();
+    let mut counter_node = node("counter");
+    counter_node
+        .config
+        .set(PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG, RuntimeValue::Bool(false));
+    let counter = graph.add_node(counter_node).unwrap();
     graph
         .connect(
             OutputSocketRef::new(source, "value"),
