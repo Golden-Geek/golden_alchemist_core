@@ -4,10 +4,11 @@ use indexmap::{IndexMap, IndexSet};
 
 use crate::{
     ANodeInstance, ANodeTypeId, AlchemistGraph, AlchemistMemory, AlchemistRuntime, ColorValue, CompileCtx, ContextKey,
-    DebugCaptureSink, EvaluationCtx, EvaluationFrame, FormulaPropertyDecl, FormulaPropertyId, FormulaPropertySchema,
-    InputSocketRef, InputValueSource, LaneRuntimePool, OutputSocketRef, RuntimeContextFrame, RuntimeInputSnapshot,
-    RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SocketId, TriggerValue, TypeBindingSource, TypeVar,
-    ValueTypeId, ValueTypeRegistry, compile_graph, evaluate_compiled_graph, primitive_node_registry,
+    DebugCaptureMode, DebugCaptureSink, EvaluationCtx, EvaluationFrame, FormulaId, FormulaPropertyDecl,
+    FormulaPropertyId, FormulaPropertySchema, InputSocketRef, InputValueSource, LaneRuntimePool, OutputPreviewStatus,
+    OutputSocketRef, RuntimeContextFrame, RuntimeInputSnapshot, RuntimePropertyFrame, RuntimeRegistries, RuntimeValue,
+    SocketId, TriggerValue, TypeBindingSource, TypeVar, ValueTypeId, ValueTypeRegistry, compile_graph,
+    evaluate_compiled_graph, primitive_node_registry,
 };
 
 fn node(type_id: &str) -> ANodeInstance {
@@ -86,6 +87,27 @@ fn evaluate(runtime: &mut AlchemistRuntime, logical_tick: u64) -> crate::Runtime
         inputs: &RuntimeInputSnapshot::default(),
         registries: &registries,
     })
+}
+
+fn evaluate_with_capture_mode(
+    runtime: &mut AlchemistRuntime,
+    logical_tick: u64,
+    capture_mode: DebugCaptureMode,
+) -> crate::RuntimeOutput {
+    let value_types = ValueTypeRegistry::with_primitives();
+    let registries = RuntimeRegistries {
+        value_types: &value_types,
+    };
+    runtime.evaluate_with_capture_mode(
+        &EvaluationCtx {
+            logical_tick,
+            delta_time: Duration::from_millis(16),
+            events: &[],
+            inputs: &RuntimeInputSnapshot::default(),
+            registries: &registries,
+        },
+        capture_mode,
+    )
 }
 
 #[test]
@@ -578,6 +600,58 @@ fn property_node_reads_default_from_runtime_frame() {
             .iter()
             .any(|sample| sample.value == RuntimeValue::Float(1.5))
     );
+}
+
+#[test]
+fn formula_default_preview_shows_node_output_values() {
+    let mut graph = AlchemistGraph::new();
+    let source = graph.add_node(constant(RuntimeValue::Float(4.25))).unwrap();
+    let mut runtime = runtime(&graph);
+    let formula_id = FormulaId::new("preview_formula");
+
+    let output = evaluate_with_capture_mode(
+        &mut runtime,
+        42,
+        DebugCaptureMode::FormulaDefaults {
+            formula_id: formula_id.clone(),
+            history_len: 8,
+        },
+    );
+
+    assert_eq!(output.debug_samples.len(), 1);
+    let sample = &output.debug_samples[0];
+    assert_eq!(sample.formula_id.as_ref(), Some(&formula_id));
+    assert_eq!(sample.context_key, None);
+    assert_eq!(sample.author_node_id, source);
+    assert_eq!(sample.output_socket, SocketId::new("value"));
+    assert_eq!(sample.value_type, ValueTypeId::new("float"));
+    assert_eq!(sample.value, RuntimeValue::Float(4.25));
+    assert_eq!(sample.logical_tick, 42);
+    assert_eq!(sample.status, OutputPreviewStatus::DefaultPreview);
+}
+
+#[test]
+fn preview_capture_off_when_editor_not_visible() {
+    let mut graph = AlchemistGraph::new();
+    graph.add_node(constant(RuntimeValue::Float(1.0))).unwrap();
+    let mut runtime = runtime(&graph);
+
+    let output = evaluate_with_capture_mode(&mut runtime, 1, DebugCaptureMode::Off);
+
+    assert!(output.debug_samples.is_empty());
+}
+
+#[test]
+fn output_preview_history_is_bounded() {
+    let mut graph = AlchemistGraph::new();
+    graph.add_node(constant(RuntimeValue::Float(1.0))).unwrap();
+    graph.add_node(constant(RuntimeValue::Float(2.0))).unwrap();
+    let mut runtime = runtime(&graph);
+
+    let output = evaluate_with_capture_mode(&mut runtime, 1, DebugCaptureMode::All { history_len: 1 });
+
+    assert_eq!(output.debug_samples.len(), 1);
+    assert_eq!(output.debug_samples[0].value, RuntimeValue::Float(2.0));
 }
 
 #[test]

@@ -67,6 +67,8 @@ pub struct CompiledExecNode {
     pub operation: CompiledNodeOperation,
     pub inputs: Vec<InputValueSource>,
     pub outputs: Vec<ValueSlotId>,
+    pub output_sockets: Vec<SocketId>,
+    pub output_types: Vec<Option<ValueTypeId>>,
     pub state_range: Range<usize>,
     pub log_enabled: bool,
 }
@@ -332,12 +334,14 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
                 )
             })
             .collect();
-        let outputs = resolved
-            .signature
-            .outputs
-            .keys()
-            .map(|socket| value_slots[&(*node_id, socket.clone())])
-            .collect();
+        let mut outputs = Vec::with_capacity(resolved.signature.outputs.len());
+        let mut output_sockets = Vec::with_capacity(resolved.signature.outputs.len());
+        let mut output_types = Vec::with_capacity(resolved.signature.outputs.len());
+        for (socket, resolved_socket) in &resolved.signature.outputs {
+            outputs.push(value_slots[&(*node_id, socket.clone())]);
+            output_sockets.push(socket.clone());
+            output_types.push(resolved_socket.value_type.clone());
+        }
         let operation = if instance.enabled {
             match compile_node_operation(instance, &resolved.signature, ctx, &compiled_properties) {
                 Ok(operation) => operation,
@@ -356,6 +360,8 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
             operation,
             inputs,
             outputs,
+            output_sockets,
+            output_types,
             state_range,
             log_enabled: instance.enabled && matches!(instance.config.get("log"), Some(RuntimeValue::Bool(true))),
         });

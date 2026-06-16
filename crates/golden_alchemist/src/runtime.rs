@@ -1,13 +1,18 @@
-use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt::Debug,
+    sync::Arc,
+    time::Duration,
+};
 
 use indexmap::{IndexMap, IndexSet};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 
 use crate::{
-    ColorValue, CompiledAlchemistGraph, CompiledFormulaPropertySchema, CompiledNodeOperation, ExecNodeId,
-    FormulaPropertyId, FormulaPropertySlotId, InputValueSource, RuntimeValue, StableRef, TriggerValue, ValueSlotId,
-    ValueTypeId, ValueTypeRegistry,
+    ANodeId, ColorValue, CompiledAlchemistGraph, CompiledFormulaPropertySchema, CompiledNodeOperation, ExecNodeId,
+    FormulaId, FormulaPropertyId, FormulaPropertySlotId, InputValueSource, RuntimeValue, SocketId, StableRef,
+    TriggerValue, ValueSlotId, ValueTypeId, ValueTypeRegistry,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -223,10 +228,130 @@ pub struct RuntimeDiagnostic {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DebugValueSample {
+    pub formula_id: Option<FormulaId>,
+    pub context_key: Option<ContextKey>,
+    pub author_node_id: ANodeId,
     pub exec_node: ExecNodeId,
+    pub output_socket: SocketId,
     pub output_slot: ValueSlotId,
+    pub value_type: ValueTypeId,
     pub value: RuntimeValue,
     pub logical_tick: u64,
+    pub status: OutputPreviewStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputPreviewStatus {
+    Live,
+    DefaultPreview,
+    Stale,
+    Error,
+    Suppressed,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DebugCaptureMode {
+    Off,
+    All {
+        history_len: usize,
+    },
+    FormulaDefaults {
+        formula_id: FormulaId,
+        history_len: usize,
+    },
+    ProcessorLane {
+        formula_id: FormulaId,
+        context_key: Option<ContextKey>,
+        history_len: usize,
+    },
+    SelectedNodes {
+        formula_id: Option<FormulaId>,
+        context_key: Option<ContextKey>,
+        nodes: IndexSet<ANodeId>,
+        history_len: usize,
+    },
+}
+
+impl Default for DebugCaptureMode {
+    fn default() -> Self {
+        Self::All {
+            history_len: usize::MAX,
+        }
+    }
+}
+
+impl DebugCaptureMode {
+    #[must_use]
+    pub fn history_len(&self) -> usize {
+        match self {
+            Self::Off => 0,
+            Self::All { history_len }
+            | Self::FormulaDefaults { history_len, .. }
+            | Self::ProcessorLane { history_len, .. }
+            | Self::SelectedNodes { history_len, .. } => *history_len,
+        }
+    }
+
+    #[must_use]
+    pub fn is_off(&self) -> bool {
+        matches!(self, Self::Off) || self.history_len() == 0
+    }
+
+    fn sample_status(&self) -> Option<OutputPreviewStatus> {
+        match self {
+            Self::Off => None,
+            Self::All { .. } | Self::ProcessorLane { .. } | Self::SelectedNodes { .. } => {
+                Some(OutputPreviewStatus::Live)
+            }
+            Self::FormulaDefaults { .. } => Some(OutputPreviewStatus::DefaultPreview),
+        }
+    }
+
+    fn formula_id(&self) -> Option<&FormulaId> {
+        match self {
+            Self::FormulaDefaults { formula_id, .. } | Self::ProcessorLane { formula_id, .. } => Some(formula_id),
+            Self::SelectedNodes { formula_id, .. } => formula_id.as_ref(),
+            Self::Off | Self::All { .. } => None,
+        }
+    }
+
+    fn accepts(&self, sample: &DebugValueSample) -> bool {
+        match self {
+            Self::Off => false,
+            Self::All { .. } | Self::FormulaDefaults { .. } => true,
+            Self::ProcessorLane { context_key, .. } => context_key == &sample.context_key,
+            Self::SelectedNodes { context_key, nodes, .. } => {
+                context_key == &sample.context_key && nodes.contains(&sample.author_node_id)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputPreviewHistory {
+    pub samples: VecDeque<DebugValueSample>,
+    pub max_len: usize,
+}
+
+impl OutputPreviewHistory {
+    #[must_use]
+    pub fn new(max_len: usize) -> Self {
+        Self {
+            samples: VecDeque::new(),
+            max_len,
+        }
+    }
+
+    pub fn push(&mut self, sample: DebugValueSample) {
+        if self.max_len == 0 {
+            return;
+        }
+        self.samples.push_back(sample);
+        while self.samples.len() > self.max_len {
+            self.samples.pop_front();
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -410,14 +535,50 @@ impl LaneRuntimePool {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DebugCaptureSink {
+    mode: DebugCaptureMode,
     samples: Vec<DebugValueSample>,
 }
 
+impl Default for DebugCaptureSink {
+    fn default() -> Self {
+        Self::new(DebugCaptureMode::default())
+    }
+}
+
 impl DebugCaptureSink {
-    pub fn capture(&mut self, sample: DebugValueSample) {
-        self.samples.push(sample);
+    #[must_use]
+    pub fn new(mode: DebugCaptureMode) -> Self {
+        Self {
+            mode,
+            samples: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn off() -> Self {
+        Self::new(DebugCaptureMode::Off)
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> &DebugCaptureMode {
+        &self.mode
+    }
+
+    pub fn capture(&mut self, mut sample: DebugValueSample) -> Option<DebugValueSample> {
+        if self.mode.is_off() || !self.mode.accepts(&sample) {
+            return None;
+        }
+        sample.status = self.mode.sample_status()?;
+        sample.formula_id = self.mode.formula_id().cloned();
+        self.samples.push(sample.clone());
+        let history_len = self.mode.history_len();
+        if history_len != usize::MAX && self.samples.len() > history_len {
+            let overflow = self.samples.len() - history_len;
+            self.samples.drain(0..overflow);
+        }
+        Some(sample)
     }
 
     #[must_use]
@@ -492,6 +653,14 @@ impl AlchemistRuntime {
     }
 
     pub fn evaluate(&mut self, ctx: &EvaluationCtx<'_>) -> RuntimeOutput {
+        self.evaluate_with_capture_mode(ctx, DebugCaptureMode::default())
+    }
+
+    pub fn evaluate_with_capture_mode(
+        &mut self,
+        ctx: &EvaluationCtx<'_>,
+        capture_mode: DebugCaptureMode,
+    ) -> RuntimeOutput {
         if self.evaluating {
             return RuntimeOutput {
                 diagnostics: vec![RuntimeDiagnostic {
@@ -502,7 +671,7 @@ impl AlchemistRuntime {
             };
         }
         self.evaluating = true;
-        let mut debug = DebugCaptureSink::default();
+        let mut debug = DebugCaptureSink::new(capture_mode);
         let context = RuntimeContextFrame::default_lane();
         let output = evaluate_compiled_graph(
             &self.compiled,
@@ -565,16 +734,32 @@ pub fn evaluate_compiled_graph(
         match result {
             Ok(values) if values.len() == node.outputs.len() => {
                 let output_values = values.clone();
-                for (slot, value) in node.outputs.iter().zip(values) {
+                for (output_index, (slot, value)) in node.outputs.iter().zip(values).enumerate() {
                     memory.values[slot.index()] = value.clone();
+                    let output_socket = node
+                        .output_sockets
+                        .get(output_index)
+                        .cloned()
+                        .unwrap_or_else(|| SocketId::new(format!("slot_{}", slot.index())));
+                    let value_type = node
+                        .output_types
+                        .get(output_index)
+                        .and_then(Clone::clone)
+                        .unwrap_or_else(|| value.value_type());
                     let sample = DebugValueSample {
+                        formula_id: None,
+                        context_key: (!frame.context.context_key().is_default_lane())
+                            .then(|| frame.context.context_key().clone()),
+                        author_node_id: node.authored_id,
                         exec_node: *exec_id,
+                        output_socket,
                         output_slot: *slot,
+                        value_type,
                         value,
                         logical_tick: frame.ctx.logical_tick,
+                        status: OutputPreviewStatus::Unavailable,
                     };
-                    frame.debug.capture(sample.clone());
-                    output.debug_samples.push(sample);
+                    frame.debug.capture(sample);
                 }
                 if node.log_enabled {
                     output.intents.push(RuntimeIntent {
@@ -602,6 +787,7 @@ pub fn evaluate_compiled_graph(
             }),
         }
     }
+    output.debug_samples = frame.debug.samples().to_vec();
     output
 }
 
