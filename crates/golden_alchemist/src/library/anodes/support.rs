@@ -153,10 +153,10 @@ pub(super) fn property_signature(ctx: &SignatureCtx<'_>, instance: &ANodeInstanc
 }
 
 pub(super) fn property_id_from_config(instance: &ANodeInstance) -> Option<FormulaPropertyId> {
-    let RuntimeValue::String(value) = instance.config.get("property_id")? else {
+    let RuntimeValue::Ref(value) = instance.config.get("property_id")? else {
         return None;
     };
-    (!value.is_empty()).then(|| FormulaPropertyId::new(value.as_ref()))
+    (!value.stable_id.is_empty()).then(|| FormulaPropertyId::new(value.stable_id.as_ref()))
 }
 
 pub(super) fn function_signature(instance: &ANodeInstance) -> ANodeSignature {

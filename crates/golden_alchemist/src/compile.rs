@@ -571,10 +571,10 @@ fn compile_property_operation(
 }
 
 fn property_id_from_config(instance: &crate::ANodeInstance) -> Option<FormulaPropertyId> {
-    let RuntimeValue::String(value) = instance.config.get("property_id")? else {
+    let RuntimeValue::Ref(value) = instance.config.get("property_id")? else {
         return None;
     };
-    (!value.is_empty()).then(|| FormulaPropertyId::new(value.as_ref()))
+    (!value.stable_id.is_empty()).then(|| FormulaPropertyId::new(value.stable_id.as_ref()))
 }
 
 fn disabled_operation(signature: &ResolvedANodeSignature, value_types: &ValueTypeRegistry) -> CompiledNodeOperation {

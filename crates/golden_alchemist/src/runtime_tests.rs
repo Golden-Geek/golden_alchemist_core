@@ -7,8 +7,8 @@ use crate::{
     DebugCaptureMode, DebugCaptureSink, EvaluationCtx, EvaluationFrame, FormulaId, FormulaPropertyDecl,
     FormulaPropertyId, FormulaPropertySchema, InputSocketRef, InputValueSource, LaneRuntimePool, OutputPreviewStatus,
     OutputSocketRef, PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG, RuntimeContextFrame, RuntimeInputSnapshot,
-    RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SocketId, TriggerValue, TypeBindingSource, TypeVar,
-    ValueTypeId, ValueTypeRegistry, compile_graph, evaluate_compiled_graph, primitive_node_registry,
+    RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SocketId, StableRef, TriggerValue, TypeBindingSource,
+    TypeVar, ValueTypeId, ValueTypeRegistry, compile_graph, evaluate_compiled_graph, primitive_node_registry,
 };
 
 fn node(type_id: &str) -> ANodeInstance {
@@ -71,7 +71,10 @@ fn property_schema(id: &str, value_type: &str, default_value: RuntimeValue) -> F
 
 fn property_node(id: &str) -> ANodeInstance {
     let mut node = node("property");
-    node.config.set("property_id", RuntimeValue::String(id.into()));
+    node.config.set(
+        "property_id",
+        RuntimeValue::Ref(StableRef::new(ValueTypeId::new("property"), id)),
+    );
     node
 }
 

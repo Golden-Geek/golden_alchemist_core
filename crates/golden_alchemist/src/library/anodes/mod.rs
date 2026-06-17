@@ -3,7 +3,8 @@ use std::sync::Arc;
 use crate::{
     ANodeConfigFieldDecl, ANodeDeclaration, ANodeInstance, ANodeRegistry, ANodeSignature, ANodeTypeId,
     CompiledNodeOperation, Diagnostic, ExecutionKind, InputSocketDecl, OutputSocketDecl, RegistryError,
-    ResolvedANodeSignature, RuntimeValue, SignatureCtx, TriggerValue, TypeBindings, TypeConstraint,
+    ResolvedANodeSignature, RuntimeValue, SignatureCtx, StableRef, TriggerValue, TypeBindings, TypeConstraint,
+    ValueTypeId,
 };
 
 mod angle_conversion;
@@ -285,8 +286,12 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                     .with_editor("runtime_value"),
             ],
             PrimitiveNodeKind::Property => vec![
-                ANodeConfigFieldDecl::new("property_id", "Property ID", RuntimeValue::String(Arc::from("")))
-                    .with_description("Stable Formula property identifier."),
+                ANodeConfigFieldDecl::new(
+                    "property_id",
+                    "Property",
+                    RuntimeValue::Ref(StableRef::new(ValueTypeId::new("property"), "")),
+                )
+                .with_description("Referenced Formula property."),
             ],
             PrimitiveNodeKind::Math => vec![
                 enum_config(

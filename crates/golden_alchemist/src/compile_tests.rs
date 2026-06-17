@@ -2,7 +2,7 @@ use crate::{
     ANodeDeclaration, ANodeInstance, ANodeSignature, ANodeTypeId, AlchemistGraph, AxisSet, CompileCtx,
     CompiledNodeOperation, ContextAxisId, ExecutionKind, FormulaPropertyDecl, FormulaPropertyId, FormulaPropertySchema,
     InputSocketDecl, InputSocketRef, NodeStateLayout, OutputSocketDecl, OutputSocketRef, ResolvedANodeSignature,
-    RuntimeValue, SignatureCtx, TypeBindings, TypeConstraint, TypeSolveCtx, ValueTypeId, ValueTypeRegistry,
+    RuntimeValue, SignatureCtx, StableRef, TypeBindings, TypeConstraint, TypeSolveCtx, ValueTypeId, ValueTypeRegistry,
     compile_graph, primitive_node_registry, solve_types,
 };
 
@@ -51,7 +51,10 @@ fn property_schema(id: &str, value_type: &str, default_value: RuntimeValue) -> F
 
 fn property_node(id: &str) -> ANodeInstance {
     let mut node = node("property");
-    node.config.set("property_id", RuntimeValue::String(id.into()));
+    node.config.set(
+        "property_id",
+        RuntimeValue::Ref(StableRef::new(ValueTypeId::new("property"), id)),
+    );
     node
 }
 
