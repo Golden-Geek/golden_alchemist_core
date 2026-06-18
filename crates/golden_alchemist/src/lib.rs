@@ -8,6 +8,7 @@ pub mod graph;
 pub mod ids;
 pub mod library;
 pub mod node;
+pub mod pipeline;
 pub mod registry;
 pub mod runtime;
 #[cfg(feature = "serde")]
@@ -42,6 +43,10 @@ pub use node::{
     InputSocketDecl, ManagedUiMode, NodeStateLayout, OutputSocketDecl, PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG,
     PipelineCardinality, SEND_ON_OUTPUT_CHANGE_ONLY_CONFIG, SignatureCtx,
 };
+pub use pipeline::{
+    PipelineShape, PipelineShapeCheckItem, PipelineShapeDiagnostic, PipelineShapeResult, PipelineShapeStep,
+    check_filter_pipeline_shapes, single_shape, value_set_shape,
+};
 pub use registry::{
     ANodeRegistry, ConversionKind, ConversionRule, FacetDescriptor, FacetRegistry, RegistryError, ValueTypeDescriptor,
     ValueTypeRegistry, ValueTypeUiDescriptor,
@@ -73,6 +78,8 @@ mod formula_tests;
 mod graph_tests;
 #[cfg(test)]
 mod library_tests;
+#[cfg(test)]
+mod pipeline_tests;
 #[cfg(test)]
 mod runtime_tests;
 #[cfg(test)]
