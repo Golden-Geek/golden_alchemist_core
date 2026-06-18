@@ -3,12 +3,13 @@ use std::time::Duration;
 use indexmap::{IndexMap, IndexSet};
 
 use crate::{
-    ANodeInstance, ANodeTypeId, AlchemistGraph, AlchemistMemory, AlchemistRuntime, ColorValue, CompileCtx, ContextKey,
-    DebugCaptureMode, DebugCaptureSink, EvaluationCtx, EvaluationFrame, FormulaId, FormulaPropertyDecl,
-    FormulaPropertyId, FormulaPropertySchema, InputSocketRef, InputValueSource, LaneRuntimePool, OutputPreviewStatus,
-    OutputSocketRef, PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG, RuntimeContextFrame, RuntimeInputSnapshot,
-    RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SocketId, StableRef, TriggerValue, TypeBindingSource,
-    TypeVar, ValueTypeId, ValueTypeRegistry, compile_graph, evaluate_compiled_graph, primitive_node_registry,
+    ANodeId, ANodeInstance, ANodeTypeId, AlchemistGraph, AlchemistMemory, AlchemistRuntime, ColorValue, CompileCtx,
+    ContextKey, DebugCaptureMode, DebugCaptureSink, EvaluationCtx, EvaluationFrame, ExtensionValue, FormulaId,
+    FormulaPropertyDecl, FormulaPropertyId, FormulaPropertySchema, InputSocketRef, InputValueSource, LaneRuntimePool,
+    OutputPreviewStatus, OutputSocketRef, PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG, RuntimeContextFrame,
+    RuntimeInputSnapshot, RuntimeOutput, RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SocketId, StableRef,
+    TriggerValue, TypeBindingSource, TypeVar, ValueStorageKind, ValueTypeDescriptor, ValueTypeId, ValueTypeRegistry,
+    compile_graph, evaluate_compiled_graph, primitive_node_registry,
 };
 
 fn node(type_id: &str) -> ANodeInstance {
@@ -32,6 +33,19 @@ fn runtime_with_properties(graph: &AlchemistGraph, properties: Option<&FormulaPr
             value_types: &ValueTypeRegistry::with_primitives(),
             nodes: &primitive_node_registry(),
             properties,
+        },
+    );
+    assert!(!result.has_errors(), "{:?}", result.diagnostics);
+    AlchemistRuntime::new(result.compiled.unwrap())
+}
+
+fn runtime_with_value_types(graph: &AlchemistGraph, value_types: &ValueTypeRegistry) -> AlchemistRuntime {
+    let result = compile_graph(
+        graph,
+        &CompileCtx {
+            value_types,
+            nodes: &primitive_node_registry(),
+            properties: None,
         },
     );
     assert!(!result.has_errors(), "{:?}", result.diagnostics);
@@ -111,6 +125,244 @@ fn evaluate_with_capture_mode(
         },
         capture_mode,
     )
+}
+
+fn evaluate_capturing_unchanged_outputs(runtime: &mut AlchemistRuntime, logical_tick: u64) -> crate::RuntimeOutput {
+    let value_types = ValueTypeRegistry::with_primitives();
+    let registries = RuntimeRegistries {
+        value_types: &value_types,
+    };
+    let ctx = EvaluationCtx {
+        logical_tick,
+        delta_time: Duration::from_millis(16),
+        events: &[],
+        inputs: &RuntimeInputSnapshot::default(),
+        registries: &registries,
+    };
+    let context = RuntimeContextFrame::default_lane();
+    let mut debug = DebugCaptureSink::new(DebugCaptureMode::default());
+    evaluate_compiled_graph(
+        &runtime.compiled,
+        &mut runtime.memory,
+        EvaluationFrame {
+            ctx: &ctx,
+            properties: &runtime.properties,
+            context: &context,
+            debug: &mut debug,
+            force_process_unchanged_inputs: false,
+            capture_unchanged_outputs: true,
+        },
+    )
+}
+
+fn sample_value(output: &RuntimeOutput, node: ANodeId, socket: &str) -> RuntimeValue {
+    output
+        .debug_samples
+        .iter()
+        .find(|sample| sample.author_node_id == node && sample.output_socket == SocketId::new(socket))
+        .unwrap_or_else(|| panic!("missing sample for {node:?}.{socket}"))
+        .value
+        .clone()
+}
+
+#[test]
+fn condition_gate_true_condition_passes_value() {
+    let mut graph = AlchemistGraph::new();
+    let value = graph.add_node(constant(RuntimeValue::Float(5.0))).unwrap();
+    let condition = graph.add_node(constant(RuntimeValue::Bool(true))).unwrap();
+    let gate = graph.add_node(node("condition_gate")).unwrap();
+    graph
+        .connect(OutputSocketRef::new(value, "value"), InputSocketRef::new(gate, "value"))
+        .unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(condition, "value"),
+            InputSocketRef::new(gate, "condition"),
+        )
+        .unwrap();
+    let mut runtime = runtime(&graph);
+
+    let output = evaluate(&mut runtime, 1);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(sample_value(&output, gate, "value"), RuntimeValue::Float(5.0));
+    assert_eq!(sample_value(&output, gate, "passed"), RuntimeValue::Bool(true));
+    assert_eq!(sample_value(&output, gate, "blocked"), RuntimeValue::Bool(false));
+}
+
+#[test]
+fn condition_gate_false_condition_blocks_value() {
+    let mut graph = AlchemistGraph::new();
+    let value = graph.add_node(constant(RuntimeValue::Float(5.0))).unwrap();
+    let condition = graph.add_node(constant(RuntimeValue::Bool(false))).unwrap();
+    let gate = graph.add_node(node("condition_gate")).unwrap();
+    graph
+        .connect(OutputSocketRef::new(value, "value"), InputSocketRef::new(gate, "value"))
+        .unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(condition, "value"),
+            InputSocketRef::new(gate, "condition"),
+        )
+        .unwrap();
+    let mut runtime = runtime(&graph);
+
+    let output = evaluate(&mut runtime, 1);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(sample_value(&output, gate, "value"), RuntimeValue::Float(0.0));
+    assert_eq!(sample_value(&output, gate, "passed"), RuntimeValue::Bool(false));
+    assert_eq!(sample_value(&output, gate, "blocked"), RuntimeValue::Bool(true));
+}
+
+#[test]
+fn condition_gate_hold_last_outputs_previous_passed_value() {
+    let mut graph = AlchemistGraph::new();
+    let value = graph.add_node(constant(RuntimeValue::Float(5.0))).unwrap();
+    let condition = graph.add_node(property_node("condition")).unwrap();
+    let mut gate_node = node("condition_gate");
+    gate_node.config.set("mode", RuntimeValue::String("hold_last".into()));
+    let gate = graph.add_node(gate_node).unwrap();
+    graph
+        .connect(OutputSocketRef::new(value, "value"), InputSocketRef::new(gate, "value"))
+        .unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(condition, "value"),
+            InputSocketRef::new(gate, "condition"),
+        )
+        .unwrap();
+    let schema = property_schema("condition", "bool", RuntimeValue::Bool(true));
+    let compiled = compile_with_properties(&graph, &schema);
+    let mut overrides = IndexMap::new();
+    overrides.insert(FormulaPropertyId::new("condition"), RuntimeValue::Bool(true));
+    let frame = RuntimePropertyFrame::with_overrides(&compiled.properties, &overrides).unwrap();
+    let mut runtime = AlchemistRuntime::with_property_frame(compiled.clone(), frame);
+
+    let first = evaluate(&mut runtime, 1);
+    assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+    assert_eq!(sample_value(&first, gate, "value"), RuntimeValue::Float(5.0));
+
+    overrides.insert(FormulaPropertyId::new("condition"), RuntimeValue::Bool(false));
+    runtime.set_property_frame(RuntimePropertyFrame::with_overrides(&compiled.properties, &overrides).unwrap());
+    let second = evaluate_capturing_unchanged_outputs(&mut runtime, 2);
+
+    assert!(second.diagnostics.is_empty(), "{:?}", second.diagnostics);
+    assert_eq!(sample_value(&second, gate, "value"), RuntimeValue::Float(5.0));
+    assert_eq!(sample_value(&second, gate, "passed"), RuntimeValue::Bool(false));
+    assert_eq!(sample_value(&second, gate, "blocked"), RuntimeValue::Bool(true));
+}
+
+#[test]
+fn condition_gate_output_default_uses_default_input() {
+    let mut graph = AlchemistGraph::new();
+    let value = graph.add_node(constant(RuntimeValue::Float(5.0))).unwrap();
+    let condition = graph.add_node(constant(RuntimeValue::Bool(false))).unwrap();
+    let default = graph.add_node(constant(RuntimeValue::Float(9.0))).unwrap();
+    let mut gate_node = node("condition_gate");
+    gate_node
+        .config
+        .set("mode", RuntimeValue::String("output_default".into()));
+    let gate = graph.add_node(gate_node).unwrap();
+    graph
+        .connect(OutputSocketRef::new(value, "value"), InputSocketRef::new(gate, "value"))
+        .unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(condition, "value"),
+            InputSocketRef::new(gate, "condition"),
+        )
+        .unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(default, "value"),
+            InputSocketRef::new(gate, "default_value"),
+        )
+        .unwrap();
+    let mut runtime = runtime(&graph);
+
+    let output = evaluate(&mut runtime, 1);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(sample_value(&output, gate, "value"), RuntimeValue::Float(9.0));
+}
+
+#[test]
+fn condition_gate_block_trigger_suppresses_fired_edge() {
+    let mut graph = AlchemistGraph::new();
+    let value = graph
+        .add_node(constant(RuntimeValue::Trigger(TriggerValue::fired(7, 1))))
+        .unwrap();
+    let condition = graph.add_node(constant(RuntimeValue::Bool(false))).unwrap();
+    let mut gate_node = node("condition_gate");
+    gate_node
+        .config
+        .set("mode", RuntimeValue::String("block_trigger".into()));
+    let gate = graph.add_node(gate_node).unwrap();
+    graph
+        .connect(OutputSocketRef::new(value, "value"), InputSocketRef::new(gate, "value"))
+        .unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(condition, "value"),
+            InputSocketRef::new(gate, "condition"),
+        )
+        .unwrap();
+    let mut runtime = runtime(&graph);
+
+    let output = evaluate(&mut runtime, 1);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let RuntimeValue::Trigger(trigger) = sample_value(&output, gate, "value") else {
+        panic!("ConditionGate should output a trigger");
+    };
+    assert!(!trigger.fired);
+    assert_eq!(trigger.edge_id, 7);
+}
+
+#[test]
+fn condition_gate_whole_valueset_gate_uses_default_whole_value() {
+    let value_type = ValueTypeId::new("example.value_set");
+    let mut value_types = ValueTypeRegistry::with_primitives();
+    value_types
+        .register(ValueTypeDescriptor::new(
+            value_type.clone(),
+            "Value Set",
+            ValueStorageKind::Extension,
+            {
+                let value_type = value_type.clone();
+                move || RuntimeValue::Extension(ExtensionValue::new(value_type.clone(), Vec::<u8>::new()))
+            },
+        ))
+        .unwrap();
+    let input_value = RuntimeValue::Extension(ExtensionValue::new(value_type.clone(), vec![1_u8, 2, 3]));
+    let default_value = RuntimeValue::Extension(ExtensionValue::new(value_type, vec![9_u8]));
+    let mut graph = AlchemistGraph::new();
+    let value = graph.add_node(constant(input_value)).unwrap();
+    let condition = graph.add_node(constant(RuntimeValue::Bool(false))).unwrap();
+    let default = graph.add_node(constant(default_value.clone())).unwrap();
+    let gate = graph.add_node(node("condition_gate")).unwrap();
+    graph
+        .connect(OutputSocketRef::new(value, "value"), InputSocketRef::new(gate, "value"))
+        .unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(condition, "value"),
+            InputSocketRef::new(gate, "condition"),
+        )
+        .unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(default, "value"),
+            InputSocketRef::new(gate, "default_value"),
+        )
+        .unwrap();
+    let mut runtime = runtime_with_value_types(&graph, &value_types);
+
+    let output = evaluate(&mut runtime, 1);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(sample_value(&output, gate, "value"), default_value);
 }
 
 #[test]

@@ -12,6 +12,7 @@ mod boolean_operation;
 mod color_mode;
 mod compare;
 mod concatenate;
+mod condition_gate;
 mod constant;
 mod convert_to_color;
 mod convert_to_string;
@@ -74,6 +75,7 @@ pub enum PrimitiveNodeKind {
     Split,
     BooleanOperation,
     Compare,
+    ConditionGate,
     TriggerOnOff,
     Gate,
     DelayOneTick,
@@ -82,7 +84,7 @@ pub enum PrimitiveNodeKind {
 }
 
 impl PrimitiveNodeKind {
-    const ALL: [Self; 29] = [
+    const ALL: [Self; 30] = [
         Self::Constant,
         Self::Property,
         Self::Math,
@@ -107,6 +109,7 @@ impl PrimitiveNodeKind {
         Self::Split,
         Self::BooleanOperation,
         Self::Compare,
+        Self::ConditionGate,
         Self::TriggerOnOff,
         Self::Gate,
         Self::DelayOneTick,
@@ -141,6 +144,7 @@ impl PrimitiveNodeKind {
             Self::Split => "split",
             Self::BooleanOperation => "boolean_operation",
             Self::Compare => "compare",
+            Self::ConditionGate => "condition_gate",
             Self::TriggerOnOff => "trigger_on_off",
             Self::Gate => "gate",
             Self::DelayOneTick => "delay_one_tick",
@@ -197,6 +201,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             PrimitiveNodeKind::Split => "Split",
             PrimitiveNodeKind::BooleanOperation => "Boolean Operation",
             PrimitiveNodeKind::Compare => "Compare",
+            PrimitiveNodeKind::ConditionGate => "Condition Gate",
             PrimitiveNodeKind::TriggerOnOff => "Trigger On/Off",
             PrimitiveNodeKind::Gate => "Gate",
             PrimitiveNodeKind::DelayOneTick => "Delay One Tick",
@@ -227,6 +232,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             | PrimitiveNodeKind::ExtractColor => "Color",
             PrimitiveNodeKind::Concatenate | PrimitiveNodeKind::ConvertToString | PrimitiveNodeKind::Split => "String",
             PrimitiveNodeKind::BooleanOperation | PrimitiveNodeKind::Compare => "Logic",
+            PrimitiveNodeKind::ConditionGate => "Flow",
             PrimitiveNodeKind::TriggerOnOff | PrimitiveNodeKind::Gate | PrimitiveNodeKind::DelayOneTick => "Flow",
             PrimitiveNodeKind::DebugValue | PrimitiveNodeKind::DebugLog => "Debug",
         }
@@ -240,6 +246,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             | PrimitiveNodeKind::Lfo
             | PrimitiveNodeKind::NoiseGenerator
             | PrimitiveNodeKind::Metronome
+            | PrimitiveNodeKind::ConditionGate
             | PrimitiveNodeKind::TriggerOnOff
             | PrimitiveNodeKind::DelayOneTick => ExecutionKind::Stateful,
             PrimitiveNodeKind::DebugLog => ExecutionKind::EffectEmitter,
@@ -418,6 +425,26 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                 ),
                 value_type_config_field_with_constraint("TValue", TypeConstraint::Primitive),
             ],
+            PrimitiveNodeKind::ConditionGate => vec![
+                enum_config(
+                    "mode",
+                    "Mode",
+                    "pass_when_true",
+                    &[
+                        ("pass_when_true", "Pass When True"),
+                        ("pass_when_false", "Pass When False"),
+                        ("hold_last", "Hold Last"),
+                        ("output_default", "Output Default"),
+                        ("block_trigger", "Block Trigger"),
+                    ],
+                ),
+                enum_config(
+                    "gate_application",
+                    "Application",
+                    "whole",
+                    &[("whole", "Whole"), ("per_lane", "Per Lane")],
+                ),
+            ],
             PrimitiveNodeKind::TriggerOnOff => vec![
                 ANodeConfigFieldDecl::new("toggle", "Toggle", RuntimeValue::Bool(false))
                     .with_description("Alternate On and Off triggers on rising input edges."),
@@ -506,6 +533,16 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                 AutoWirePolicy::None,
                 PipelineCardinality::Reshape,
             )],
+            PrimitiveNodeKind::ConditionGate => vec![filter_capability(
+                Some("value"),
+                Some("value"),
+                AutoWirePolicy::Gate {
+                    input: socket("value"),
+                    condition: socket("condition"),
+                    output: socket("value"),
+                },
+                PipelineCardinality::WholeSet,
+            )],
             _ => Vec::new(),
         }
     }
@@ -592,6 +629,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                 ..ANodeSignature::default()
             },
             PrimitiveNodeKind::Compare => compare_signature(),
+            PrimitiveNodeKind::ConditionGate => condition_gate::signature(),
             PrimitiveNodeKind::TriggerOnOff => ANodeSignature {
                 inputs: vec![InputSocketDecl::new("value", "Value", exact("bool"))],
                 outputs: vec![
@@ -716,6 +754,9 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             PrimitiveNodeKind::Compare => CompiledNodeOperation::Custom(Arc::new(compare::CompareEval {
                 comparator: compare::Comparator::from_config(instance),
             })),
+            PrimitiveNodeKind::ConditionGate => {
+                CompiledNodeOperation::Custom(Arc::new(condition_gate::ConditionGateEval::from_config(instance)))
+            }
             PrimitiveNodeKind::TriggerOnOff => {
                 CompiledNodeOperation::Custom(Arc::new(trigger_on_off::TriggerOnOffEval {
                     toggle: config_bool(instance, "toggle", false),

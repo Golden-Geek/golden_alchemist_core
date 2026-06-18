@@ -46,6 +46,7 @@ fn primitive_catalog_contains_every_declaration() {
         "split",
         "boolean_operation",
         "compare",
+        "condition_gate",
         "trigger_on_off",
         "gate",
         "delay_one_tick",
@@ -77,6 +78,7 @@ fn filter_capable_node_discovery_is_declaration_driven() {
         "angle_conversion",
         "convert_to_color",
         "extract_color",
+        "condition_gate",
     ] {
         assert!(filter_ids.iter().any(|candidate| candidate == id), "{id}");
     }
@@ -111,6 +113,28 @@ fn primary_socket_autowiring_is_declared_for_unary_filters() {
         }
     );
     assert_eq!(capability.cardinality, PipelineCardinality::Elementwise);
+}
+
+#[test]
+fn condition_gate_declares_filter_gate_capability() {
+    let declaration = PrimitiveNodeDeclaration::new(PrimitiveNodeKind::ConditionGate);
+    let capability = declaration
+        .role_capabilities()
+        .into_iter()
+        .find(|capability| capability.role == SurfaceItemKind::Filter)
+        .expect("ConditionGate should be filter-capable");
+
+    assert_eq!(capability.primary_input, Some(crate::SocketId::new("value")));
+    assert_eq!(capability.primary_output, Some(crate::SocketId::new("value")));
+    assert_eq!(
+        capability.autowire,
+        AutoWirePolicy::Gate {
+            input: crate::SocketId::new("value"),
+            condition: crate::SocketId::new("condition"),
+            output: crate::SocketId::new("value"),
+        }
+    );
+    assert_eq!(capability.cardinality, PipelineCardinality::WholeSet);
 }
 
 #[test]
