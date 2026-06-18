@@ -23,7 +23,9 @@ pub use expose::{
 pub use formula::{
     AlchemistFormula, AlchemistFormulaInstance, FormulaContextContract, FormulaMaterializationError, FormulaMigration,
     FormulaOverrides, FormulaPropertyDecl, FormulaPropertySchema, FormulaRef, FormulaSurface, FormulaSurfaceBindings,
-    ManagedANodeBindings, PropertyUiHints, SurfaceItem, SurfaceItemKind, SurfaceSection, SurfaceSource,
+    ManagedANodeBindings, ManagedItemInstance, ManagedItemUiState, ManagedRegionDefinition, ManagedRegionInstance,
+    ManagedRegionInstances, ManagedRegionKind, ManagedRegionValidationError, ManagedSocketRef, PropertyUiHints,
+    SurfaceItem, SurfaceItemKind, SurfaceSection, SurfaceSource,
 };
 pub use graph::{
     AEdge, ANodeConfig, ANodeInstance, ANodeUiState, AlchemistGraph, GraphComment, GraphEditError, GraphGroup,
@@ -31,8 +33,8 @@ pub use graph::{
 };
 pub use ids::{
     ANodeId, ANodeTypeId, AlchemistGraphId, ContextDimensionId, ExecNodeId, ExposedDeclId, FacetId, FormulaId,
-    FormulaPropertyId, FormulaPropertySlotId, SocketId, SurfaceContributionId, SurfaceItemId, SurfaceSectionId,
-    ValueSlotId, ValueTypeId,
+    FormulaPropertyId, FormulaPropertySlotId, ManagedItemId, ManagedRegionId, SocketId, SurfaceContributionId,
+    SurfaceItemId, SurfaceSectionId, ValueSlotId, ValueTypeId,
 };
 pub use library::{PrimitiveNodeDeclaration, PrimitiveNodeKind, primitive_node_registry, register_primitive_nodes};
 pub use node::{

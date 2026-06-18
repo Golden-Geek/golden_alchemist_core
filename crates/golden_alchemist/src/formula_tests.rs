@@ -1,6 +1,7 @@
 use crate::{
     ANodeFieldPath, ANodeInstance, ANodeTypeId, AlchemistFormula, AlchemistGraph, FormulaContextContract, FormulaId,
-    FormulaPropertySchema, FormulaSurface, ParamUiHints, RuntimeValue, SurfaceItem, SurfaceItemId, SurfaceItemKind,
+    FormulaPropertySchema, FormulaSurface, ManagedRegionDefinition, ManagedRegionId, ManagedRegionInstance,
+    ManagedRegionInstances, ManagedRegionKind, ParamUiHints, RuntimeValue, SurfaceItem, SurfaceItemId, SurfaceItemKind,
     SurfaceSection, SurfaceSectionId, SurfaceSource, ValueTypeId, ValueTypeSpec,
 };
 
@@ -32,6 +33,7 @@ fn formula_instance_references_shared_definition_and_materializes_overrides() {
             }],
             source: SurfaceSource::Formula,
         }],
+        managed_regions: Vec::new(),
     };
     let formula = AlchemistFormula {
         id: FormulaId::new("test"),
@@ -74,4 +76,91 @@ fn formula_instance_references_shared_definition_and_materializes_overrides() {
         Some(&RuntimeValue::Float(1.0)),
         "materializing one Processor instance must not mutate the shared Formula"
     );
+}
+
+#[test]
+fn managed_region_kind_roundtrips_through_json() {
+    let encoded = serde_json::to_string(&ManagedRegionKind::FilterPipeline).unwrap();
+    assert_eq!(encoded, "\"filter_pipeline\"");
+
+    let decoded: ManagedRegionKind = serde_json::from_str("\"action_commands\"").unwrap();
+    assert_eq!(decoded, ManagedRegionKind::ActionCommands);
+}
+
+#[test]
+fn empty_managed_regions_are_instantiated_from_surface() {
+    let surface = FormulaSurface {
+        sections: Vec::new(),
+        managed_regions: vec![
+            region(
+                "inputs",
+                ManagedRegionKind::InputSet,
+                "Inputs",
+                vec![SurfaceItemKind::Input],
+            ),
+            region(
+                "filters",
+                ManagedRegionKind::FilterPipeline,
+                "Filters",
+                vec![SurfaceItemKind::Filter],
+            ),
+        ],
+    };
+
+    let instances = ManagedRegionInstances::empty_for(&surface);
+
+    assert_eq!(instances.regions.len(), 2);
+    assert_eq!(
+        instances
+            .regions
+            .get(&ManagedRegionId::new("inputs"))
+            .map(|region| region.items.len()),
+        Some(0)
+    );
+    instances
+        .validate_against(&surface)
+        .expect("empty regions should be valid");
+}
+
+#[test]
+fn invalid_managed_region_reference_reports_diagnostic() {
+    let surface = FormulaSurface {
+        sections: Vec::new(),
+        managed_regions: vec![region(
+            "inputs",
+            ManagedRegionKind::InputSet,
+            "Inputs",
+            vec![SurfaceItemKind::Input],
+        )],
+    };
+    let mut instances = ManagedRegionInstances::empty_for(&surface);
+    instances.regions.insert(
+        ManagedRegionId::new("missing"),
+        ManagedRegionInstance {
+            region_id: ManagedRegionId::new("missing"),
+            items: Vec::new(),
+        },
+    );
+
+    let error = instances
+        .validate_against(&surface)
+        .expect_err("unknown region should be rejected");
+
+    assert!(error.to_string().contains("unknown region `missing`"));
+}
+
+fn region(
+    id: &str,
+    kind: ManagedRegionKind,
+    label: &str,
+    accepted_roles: Vec<SurfaceItemKind>,
+) -> ManagedRegionDefinition {
+    ManagedRegionDefinition {
+        id: ManagedRegionId::new(id),
+        kind,
+        label: label.into(),
+        input_socket: None,
+        output_socket: None,
+        accepted_roles,
+    }
 }

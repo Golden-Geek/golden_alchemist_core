@@ -82,11 +82,13 @@ macro_rules! string_id {
 
 uuid_id!(AlchemistGraphId);
 uuid_id!(ANodeId);
+uuid_id!(ManagedItemId);
 
 string_id!(ANodeTypeId);
 string_id!(ContextDimensionId);
 string_id!(FormulaId);
 string_id!(FormulaPropertyId);
+string_id!(ManagedRegionId);
 string_id!(SurfaceContributionId);
 string_id!(SurfaceItemId);
 string_id!(SurfaceSectionId);

@@ -1,9 +1,9 @@
 use indexmap::IndexMap;
 
 use crate::{
-    ANodeFieldPath, ANodeId, AlchemistGraph, ContextDimensionId, Diagnostic, FormulaId, FormulaPropertyId,
-    ParamUiHints, RuntimeValue, StableRef, SurfaceContributionId, SurfaceItemId, SurfaceSectionId, ValueTypeId,
-    ValueTypeSpec,
+    ANodeFieldPath, ANodeId, ANodeInstance, AlchemistGraph, ContextDimensionId, Diagnostic, FormulaId,
+    FormulaPropertyId, ManagedItemId, ManagedRegionId, ParamUiHints, RuntimeValue, SocketId, StableRef,
+    SurfaceContributionId, SurfaceItemId, SurfaceSectionId, ValueTypeId, ValueTypeSpec,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +72,8 @@ pub struct FormulaMigration {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FormulaSurface {
     pub sections: Vec<SurfaceSection>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub managed_regions: Vec<ManagedRegionDefinition>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -116,6 +118,108 @@ pub struct SurfaceItem {
     pub value_type: Option<ValueTypeSpec>,
     pub ui: ParamUiHints,
     pub bindings: Vec<ANodeFieldPath>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum ManagedRegionKind {
+    InputSet,
+    FilterPipeline,
+    OutputSet,
+    ActionTrigger,
+    ActionCommands,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ManagedSocketRef {
+    pub node: ANodeId,
+    pub socket: SocketId,
+}
+
+impl ManagedSocketRef {
+    #[must_use]
+    pub fn new(node: ANodeId, socket: impl Into<SocketId>) -> Self {
+        Self {
+            node,
+            socket: socket.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ManagedRegionDefinition {
+    pub id: ManagedRegionId,
+    pub kind: ManagedRegionKind,
+    pub label: String,
+    pub input_socket: Option<ManagedSocketRef>,
+    pub output_socket: Option<ManagedSocketRef>,
+    pub accepted_roles: Vec<SurfaceItemKind>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ManagedRegionInstances {
+    pub regions: IndexMap<ManagedRegionId, ManagedRegionInstance>,
+}
+
+impl ManagedRegionInstances {
+    #[must_use]
+    pub fn empty_for(surface: &FormulaSurface) -> Self {
+        let regions = surface
+            .managed_regions
+            .iter()
+            .map(|definition| {
+                (
+                    definition.id.clone(),
+                    ManagedRegionInstance {
+                        region_id: definition.id.clone(),
+                        items: Vec::new(),
+                    },
+                )
+            })
+            .collect();
+        Self { regions }
+    }
+
+    pub fn validate_against(&self, surface: &FormulaSurface) -> Result<(), ManagedRegionValidationError> {
+        for instance in self.regions.values() {
+            if !surface
+                .managed_regions
+                .iter()
+                .any(|definition| definition.id == instance.region_id)
+            {
+                return Err(ManagedRegionValidationError::UnknownRegion {
+                    region_id: instance.region_id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ManagedRegionInstance {
+    pub region_id: ManagedRegionId,
+    pub items: Vec<ManagedItemInstance>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ManagedItemInstance {
+    pub id: ManagedItemId,
+    pub anode: ANodeInstance,
+    pub enabled: bool,
+    pub ui_state: ManagedItemUiState,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ManagedItemUiState {
+    pub collapsed: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -175,6 +279,7 @@ impl AlchemistFormula {
             },
             surface_bindings: FormulaSurfaceBindings::from_surface(&self.surface),
             overrides: FormulaOverrides::default(),
+            managed_regions: ManagedRegionInstances::empty_for(&self.surface),
             managed_bindings: ManagedANodeBindings::default(),
             diagnostics: Vec::new(),
         }
@@ -210,6 +315,7 @@ pub struct AlchemistFormulaInstance {
     pub formula_ref: FormulaRef,
     pub surface_bindings: FormulaSurfaceBindings,
     pub overrides: FormulaOverrides,
+    pub managed_regions: ManagedRegionInstances,
     pub managed_bindings: ManagedANodeBindings,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -230,6 +336,12 @@ impl AlchemistFormulaInstance {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ManagedRegionValidationError {
+    #[error("managed region instance references unknown region `{region_id}`")]
+    UnknownRegion { region_id: ManagedRegionId },
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
