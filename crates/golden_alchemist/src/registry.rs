@@ -3,7 +3,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::{
-    ANodeDeclaration, ANodeTypeId, FacetId, RuntimeValue, TriggerValue, ValueStorageKind, ValueTypeId,
+    ANodeDeclaration, ANodeTypeId, FacetId, RuntimeValue, SurfaceItemKind, TriggerValue, ValueStorageKind, ValueTypeId,
     value::ColorValue,
 };
 
@@ -205,6 +205,10 @@ impl ANodeRegistry {
 
     pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn ANodeDeclaration>> {
         self.declarations.values()
+    }
+
+    pub fn declarations_with_role(&self, role: SurfaceItemKind) -> impl Iterator<Item = &Arc<dyn ANodeDeclaration>> {
+        self.iter().filter(move |declaration| declaration.supports_role(role))
     }
 }
 

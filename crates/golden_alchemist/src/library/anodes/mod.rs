@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::{
-    ANodeConfigFieldDecl, ANodeDeclaration, ANodeInstance, ANodeRegistry, ANodeSignature, ANodeTypeId,
-    CompiledNodeOperation, Diagnostic, ExecutionKind, InputSocketDecl, OutputSocketDecl, RegistryError,
-    ResolvedANodeSignature, RuntimeValue, SignatureCtx, StableRef, TriggerValue, TypeBindings, TypeConstraint,
-    ValueTypeId,
+    ANodeConfigFieldDecl, ANodeDeclaration, ANodeInstance, ANodeRegistry, ANodeRoleCapability, ANodeSignature,
+    ANodeTypeId, AutoWirePolicy, CompiledNodeOperation, Diagnostic, ExecutionKind, InputSocketDecl, ManagedUiMode,
+    OutputSocketDecl, PipelineCardinality, RegistryError, ResolvedANodeSignature, RuntimeValue, SignatureCtx,
+    StableRef, SurfaceItemKind, TriggerValue, TypeBindings, TypeConstraint, ValueTypeId,
 };
 
 mod angle_conversion;
@@ -461,6 +461,55 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
         }
     }
 
+    fn role_capabilities(&self) -> Vec<ANodeRoleCapability> {
+        match self.kind {
+            PrimitiveNodeKind::Math => vec![filter_capability(
+                None,
+                Some("result"),
+                AutoWirePolicy::None,
+                PipelineCardinality::Aggregate,
+            )],
+            PrimitiveNodeKind::Function => vec![unary_filter_capability(
+                "value",
+                "result",
+                PipelineCardinality::Elementwise,
+            )],
+            PrimitiveNodeKind::Remap => vec![unary_filter_capability(
+                "value",
+                "result",
+                PipelineCardinality::Elementwise,
+            )],
+            PrimitiveNodeKind::SmoothFilter => vec![unary_filter_capability(
+                "value",
+                "result",
+                PipelineCardinality::Elementwise,
+            )],
+            PrimitiveNodeKind::OneMinus
+            | PrimitiveNodeKind::Inverse
+            | PrimitiveNodeKind::Negate
+            | PrimitiveNodeKind::Speed
+            | PrimitiveNodeKind::AngleConversion
+            | PrimitiveNodeKind::CoordinateSystem => vec![unary_filter_capability(
+                "value",
+                "result",
+                PipelineCardinality::Elementwise,
+            )],
+            PrimitiveNodeKind::ConvertToColor => vec![filter_capability(
+                None,
+                Some("color"),
+                AutoWirePolicy::None,
+                PipelineCardinality::Reshape,
+            )],
+            PrimitiveNodeKind::ExtractColor => vec![filter_capability(
+                Some("color"),
+                None,
+                AutoWirePolicy::None,
+                PipelineCardinality::Reshape,
+            )],
+            _ => Vec::new(),
+        }
+    }
+
     fn signature(&self, ctx: &SignatureCtx<'_>, instance: &ANodeInstance, _bindings: &TypeBindings) -> ANodeSignature {
         match self.kind {
             PrimitiveNodeKind::Constant => constant_signature(instance),
@@ -678,6 +727,38 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             PrimitiveNodeKind::DebugLog => debug_log::operation(),
         })
     }
+}
+
+fn socket(id: &str) -> crate::SocketId {
+    crate::SocketId::new(id)
+}
+
+fn filter_capability(
+    primary_input: Option<&str>,
+    primary_output: Option<&str>,
+    autowire: AutoWirePolicy,
+    cardinality: PipelineCardinality,
+) -> ANodeRoleCapability {
+    ANodeRoleCapability {
+        role: SurfaceItemKind::Filter,
+        primary_input: primary_input.map(socket),
+        primary_output: primary_output.map(socket),
+        autowire,
+        cardinality,
+        ui_mode: ManagedUiMode::CompactRow,
+    }
+}
+
+fn unary_filter_capability(input: &str, output: &str, cardinality: PipelineCardinality) -> ANodeRoleCapability {
+    filter_capability(
+        Some(input),
+        Some(output),
+        AutoWirePolicy::UnaryTransform {
+            input: socket(input),
+            output: socket(output),
+        },
+        cardinality,
+    )
 }
 
 pub fn register_primitive_nodes(registry: &mut ANodeRegistry) -> Result<(), RegistryError> {

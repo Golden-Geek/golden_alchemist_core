@@ -1,6 +1,7 @@
 use crate::{
-    ANodeDeclaration, ANodeInstance, ANodeTypeId, ExecutionKind, PrimitiveNodeDeclaration, PrimitiveNodeKind,
-    RuntimeValue, SignatureCtx, TypeConstraint, TypeVar, ValueTypeRegistry, primitive_node_registry,
+    ANodeDeclaration, ANodeInstance, ANodeRoleCapability, ANodeTypeId, AutoWirePolicy, ExecutionKind,
+    PipelineCardinality, PrimitiveNodeDeclaration, PrimitiveNodeKind, RuntimeValue, SignatureCtx, SurfaceItemKind,
+    TypeConstraint, TypeVar, ValueTypeRegistry, primitive_node_registry,
 };
 
 fn signature(kind: PrimitiveNodeKind) -> crate::ANodeSignature {
@@ -53,6 +54,78 @@ fn primitive_catalog_contains_every_declaration() {
     ] {
         assert!(registry.get(&ANodeTypeId::new(id)).is_some(), "{id}");
     }
+}
+
+#[test]
+fn filter_capable_node_discovery_is_declaration_driven() {
+    let registry = primitive_node_registry();
+    let filter_ids = registry
+        .declarations_with_role(SurfaceItemKind::Filter)
+        .map(|declaration| declaration.type_id().to_string())
+        .collect::<Vec<_>>();
+
+    for id in [
+        "math",
+        "function",
+        "remap",
+        "smooth_filter",
+        "one_minus",
+        "inverse",
+        "negate",
+        "speed",
+        "coordinate_system",
+        "angle_conversion",
+        "convert_to_color",
+        "extract_color",
+    ] {
+        assert!(filter_ids.iter().any(|candidate| candidate == id), "{id}");
+    }
+    assert!(!filter_ids.iter().any(|candidate| candidate == "constant"));
+    assert!(!filter_ids.iter().any(|candidate| candidate == "debug_log"));
+}
+
+#[test]
+fn non_filter_node_has_no_filter_capability() {
+    let declaration = PrimitiveNodeDeclaration::new(PrimitiveNodeKind::Constant);
+
+    assert!(!declaration.supports_role(SurfaceItemKind::Filter));
+    assert!(declaration.role_capabilities().is_empty());
+}
+
+#[test]
+fn primary_socket_autowiring_is_declared_for_unary_filters() {
+    let declaration = PrimitiveNodeDeclaration::new(PrimitiveNodeKind::Remap);
+    let capability = declaration
+        .role_capabilities()
+        .into_iter()
+        .find(|capability| capability.role == SurfaceItemKind::Filter)
+        .expect("Remap should be filter-capable");
+
+    assert_eq!(capability.primary_input, Some(crate::SocketId::new("value")));
+    assert_eq!(capability.primary_output, Some(crate::SocketId::new("result")));
+    assert_eq!(
+        capability.autowire,
+        AutoWirePolicy::UnaryTransform {
+            input: crate::SocketId::new("value"),
+            output: crate::SocketId::new("result"),
+        }
+    );
+    assert_eq!(capability.cardinality, PipelineCardinality::Elementwise);
+}
+
+#[test]
+fn capability_metadata_roundtrips_through_json() {
+    let capability = PrimitiveNodeDeclaration::new(PrimitiveNodeKind::ConvertToColor)
+        .role_capabilities()
+        .into_iter()
+        .next()
+        .expect("Convert To Color should expose a reshape capability");
+
+    let encoded = serde_json::to_string(&capability).unwrap();
+    let decoded: ANodeRoleCapability = serde_json::from_str(&encoded).unwrap();
+
+    assert_eq!(decoded, capability);
+    assert_eq!(decoded.cardinality, PipelineCardinality::Reshape);
 }
 
 #[test]

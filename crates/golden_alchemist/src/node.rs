@@ -3,8 +3,8 @@ use smol_str::SmolStr;
 
 use crate::{
     ANodeInstance, ANodeTypeId, AxisSet, CompiledNodeOperation, Diagnostic, DiagnosticOrigin, FormulaPropertySchema,
-    ResolvedANodeSignature, RuntimeValue, SocketId, TypeBindings, TypeConstraint, TypeVar, ValueStorageKind,
-    ValueTypeId, ValueTypeRegistry,
+    ResolvedANodeSignature, RuntimeValue, SocketId, SurfaceItemKind, TypeBindings, TypeConstraint, TypeVar,
+    ValueStorageKind, ValueTypeId, ValueTypeRegistry,
 };
 
 pub const PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG: &str = "process_on_input_change_only";
@@ -95,6 +95,59 @@ pub struct ANodeSignature {
 pub struct SignatureCtx<'a> {
     pub value_types: &'a ValueTypeRegistry,
     pub properties: Option<&'a FormulaPropertySchema>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum AutoWirePolicy {
+    None,
+    UnaryTransform {
+        input: SocketId,
+        output: SocketId,
+    },
+    Source {
+        output: SocketId,
+    },
+    Sink {
+        input: SocketId,
+        trigger: Option<SocketId>,
+    },
+    Gate {
+        input: SocketId,
+        condition: SocketId,
+        output: SocketId,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum PipelineCardinality {
+    Elementwise,
+    Aggregate,
+    Reshape,
+    Expand,
+    WholeSet,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum ManagedUiMode {
+    FullGraph,
+    CompactRow,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ANodeRoleCapability {
+    pub role: SurfaceItemKind,
+    pub primary_input: Option<SocketId>,
+    pub primary_output: Option<SocketId>,
+    pub autowire: AutoWirePolicy,
+    pub cardinality: PipelineCardinality,
+    pub ui_mode: ManagedUiMode,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -193,6 +246,14 @@ pub trait ANodeDeclaration: Send + Sync {
     }
     fn config_fields_for(&self, _instance: &ANodeInstance) -> Vec<ANodeConfigFieldDecl> {
         self.config_fields()
+    }
+    fn role_capabilities(&self) -> Vec<ANodeRoleCapability> {
+        Vec::new()
+    }
+    fn supports_role(&self, role: SurfaceItemKind) -> bool {
+        self.role_capabilities()
+            .iter()
+            .any(|capability| capability.role == role)
     }
     fn default_process_on_input_change_only(&self) -> bool {
         true
