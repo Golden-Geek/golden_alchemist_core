@@ -1,8 +1,11 @@
 use crate::{
-    ANodeFieldPath, ANodeInstance, ANodeTypeId, AlchemistFormula, AlchemistGraph, FormulaContextContract, FormulaId,
-    FormulaPropertySchema, FormulaSurface, ManagedRegionDefinition, ManagedRegionId, ManagedRegionInstance,
-    ManagedRegionInstances, ManagedRegionKind, ParamUiHints, RuntimeValue, SurfaceItem, SurfaceItemId, SurfaceItemKind,
-    SurfaceSection, SurfaceSectionId, SurfaceSource, ValueTypeId, ValueTypeSpec,
+    AEdge, ANodeDeclaration, ANodeFieldPath, ANodeInstance, ANodeTypeId, AlchemistFormula, AlchemistGraph,
+    FormulaContextContract, FormulaId, FormulaMaterializationError, FormulaPropertySchema, FormulaSurface,
+    InputSocketRef, ManagedItemId, ManagedItemInstance, ManagedItemUiState, ManagedRegionDefinition, ManagedRegionId,
+    ManagedRegionInstance, ManagedRegionInstances, ManagedRegionKind, ManagedSocketRef, OutputSocketRef, ParamUiHints,
+    PipelineLoweringCtx, PipelineLoweringDiagnosticKind, PrimitiveNodeDeclaration, PrimitiveNodeKind, RuntimeValue,
+    SurfaceItem, SurfaceItemId, SurfaceItemKind, SurfaceSection, SurfaceSectionId, SurfaceSource, ValueTypeId,
+    ValueTypeRegistry, ValueTypeSpec, primitive_node_registry, single_shape, value_set_shape,
 };
 
 #[test]
@@ -147,6 +150,199 @@ fn invalid_managed_region_reference_reports_diagnostic() {
         .expect_err("unknown region should be rejected");
 
     assert!(error.to_string().contains("unknown region `missing`"));
+}
+
+#[test]
+fn materialize_with_filter_pipelines_lowers_managed_filter_items() {
+    let mut graph = AlchemistGraph::new();
+    let input = graph
+        .add_node(ANodeInstance::new(ANodeTypeId::new("boundary_input"), "Boundary Input"))
+        .unwrap();
+    let output = graph
+        .add_node(ANodeInstance::new(
+            ANodeTypeId::new("boundary_output"),
+            "Boundary Output",
+        ))
+        .unwrap();
+    let surface = FormulaSurface {
+        sections: Vec::new(),
+        managed_regions: vec![filter_region(input, output)],
+    };
+    let formula = formula_with_graph_and_surface(graph, surface);
+    let mut instance = formula.instantiate();
+    let remap = managed_filter_item(PrimitiveNodeKind::Remap);
+    let remap_id = remap.anode.id;
+    instance
+        .managed_regions
+        .regions
+        .get_mut(&ManagedRegionId::new("filters"))
+        .unwrap()
+        .items
+        .push(remap);
+    let value_types = ValueTypeRegistry::with_primitives();
+    let nodes = primitive_node_registry();
+
+    let materialized = formula
+        .materialize_with_filter_pipelines(
+            &instance,
+            &PipelineLoweringCtx {
+                value_types: &value_types,
+                nodes: &nodes,
+                properties: None,
+            },
+            &[(ManagedRegionId::new("filters"), single_shape("float"))],
+        )
+        .unwrap();
+
+    assert!(materialized.nodes.contains_key(&remap_id));
+    assert_eq!(
+        materialized.edges,
+        vec![
+            AEdge {
+                from: OutputSocketRef::new(input, "value"),
+                to: InputSocketRef::new(remap_id, "value"),
+            },
+            AEdge {
+                from: OutputSocketRef::new(remap_id, "result"),
+                to: InputSocketRef::new(output, "value"),
+            },
+        ]
+    );
+}
+
+#[test]
+fn materialize_with_filter_pipelines_requires_initial_shape() {
+    let mut graph = AlchemistGraph::new();
+    let input = graph
+        .add_node(ANodeInstance::new(ANodeTypeId::new("boundary_input"), "Boundary Input"))
+        .unwrap();
+    let output = graph
+        .add_node(ANodeInstance::new(
+            ANodeTypeId::new("boundary_output"),
+            "Boundary Output",
+        ))
+        .unwrap();
+    let surface = FormulaSurface {
+        sections: Vec::new(),
+        managed_regions: vec![filter_region(input, output)],
+    };
+    let formula = formula_with_graph_and_surface(graph, surface);
+    let instance = formula.instantiate();
+    let value_types = ValueTypeRegistry::with_primitives();
+    let nodes = primitive_node_registry();
+
+    let error = formula
+        .materialize_with_filter_pipelines(
+            &instance,
+            &PipelineLoweringCtx {
+                value_types: &value_types,
+                nodes: &nodes,
+                properties: None,
+            },
+            &[],
+        )
+        .expect_err("filter pipeline materialization needs an explicit starting shape");
+
+    assert!(matches!(
+        error,
+        FormulaMaterializationError::MissingManagedRegionInitialShape { .. }
+    ));
+}
+
+#[test]
+fn materialize_with_filter_pipelines_rejects_valueset_elementwise_without_lane_strategy() {
+    let mut graph = AlchemistGraph::new();
+    let input = graph
+        .add_node(ANodeInstance::new(ANodeTypeId::new("boundary_input"), "Boundary Input"))
+        .unwrap();
+    let output = graph
+        .add_node(ANodeInstance::new(
+            ANodeTypeId::new("boundary_output"),
+            "Boundary Output",
+        ))
+        .unwrap();
+    let surface = FormulaSurface {
+        sections: Vec::new(),
+        managed_regions: vec![filter_region(input, output)],
+    };
+    let formula = formula_with_graph_and_surface(graph, surface);
+    let mut instance = formula.instantiate();
+    instance
+        .managed_regions
+        .regions
+        .get_mut(&ManagedRegionId::new("filters"))
+        .unwrap()
+        .items
+        .push(managed_filter_item(PrimitiveNodeKind::Remap));
+    let value_types = ValueTypeRegistry::with_primitives();
+    let nodes = primitive_node_registry();
+
+    let error = formula
+        .materialize_with_filter_pipelines(
+            &instance,
+            &PipelineLoweringCtx {
+                value_types: &value_types,
+                nodes: &nodes,
+                properties: None,
+            },
+            &[(
+                ManagedRegionId::new("filters"),
+                value_set_shape("float", Some(crate::ContextAxisId::new("input_lane"))),
+            )],
+        )
+        .expect_err("ValueSet elementwise lowering needs explicit lane support");
+
+    match error {
+        FormulaMaterializationError::ManagedRegionLoweringFailed {
+            lowering_diagnostics,
+            shape_diagnostics,
+            ..
+        } => {
+            assert_eq!(shape_diagnostics.len(), 0);
+            assert_eq!(lowering_diagnostics.len(), 1);
+            assert_eq!(
+                lowering_diagnostics[0].kind,
+                PipelineLoweringDiagnosticKind::UnsupportedValueSetElementwise
+            );
+        }
+        other => panic!("expected managed lowering failure, got {other:?}"),
+    }
+}
+
+fn formula_with_graph_and_surface(graph: AlchemistGraph, surface: FormulaSurface) -> AlchemistFormula {
+    AlchemistFormula {
+        id: FormulaId::new("test"),
+        version: 1,
+        label: "Test".into(),
+        description: None,
+        tags: Vec::new(),
+        graph,
+        properties: FormulaPropertySchema::default(),
+        surface,
+        context_contract: FormulaContextContract::default(),
+        migrations: Vec::new(),
+    }
+}
+
+fn filter_region(input: crate::ANodeId, output: crate::ANodeId) -> ManagedRegionDefinition {
+    ManagedRegionDefinition {
+        id: ManagedRegionId::new("filters"),
+        kind: ManagedRegionKind::FilterPipeline,
+        label: "Filters".into(),
+        input_socket: Some(ManagedSocketRef::new(input, "value")),
+        output_socket: Some(ManagedSocketRef::new(output, "value")),
+        accepted_roles: vec![SurfaceItemKind::Filter],
+    }
+}
+
+fn managed_filter_item(kind: PrimitiveNodeKind) -> ManagedItemInstance {
+    let declaration = PrimitiveNodeDeclaration::new(kind);
+    ManagedItemInstance {
+        id: ManagedItemId::new(),
+        anode: ANodeInstance::new(declaration.type_id(), declaration.label()),
+        enabled: true,
+        ui_state: ManagedItemUiState::default(),
+    }
 }
 
 fn region(

@@ -268,12 +268,6 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         };
     }
 
-    let authored_to_exec: IndexMap<ANodeId, ExecNodeId> = graph
-        .nodes
-        .keys()
-        .enumerate()
-        .map(|(index, node)| (*node, ExecNodeId::new(index as u32)))
-        .collect();
     let mut value_slots = IndexMap::<(ANodeId, SocketId), ValueSlotId>::new();
     let mut next_value_slot = 0_u32;
     for (node_id, resolved) in &solved.graph.nodes {
@@ -283,7 +277,7 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         }
     }
 
-    let topo_order = match topological_order(graph, ctx.nodes, &authored_to_exec) {
+    let topo_nodes = match topological_order(graph, ctx.nodes) {
         Ok(order) => order,
         Err(cycle_nodes) => {
             diagnostics.push(Diagnostic::error(
@@ -297,10 +291,16 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
             };
         }
     };
+    let authored_to_exec: IndexMap<ANodeId, ExecNodeId> = topo_nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (*node, ExecNodeId::new(index as u32)))
+        .collect();
+    let topo_order = topo_nodes.iter().map(|node| authored_to_exec[node]).collect::<Vec<_>>();
 
     let mut state_slot_count = 0_usize;
-    let mut ranges = Vec::with_capacity(graph.nodes.len());
-    let mut exec_nodes = Vec::with_capacity(graph.nodes.len());
+    let mut ranges = vec![0..0; graph.nodes.len()];
+    let mut exec_nodes = (0..graph.nodes.len()).map(|_| None).collect::<Vec<_>>();
     let mut direct_context_axes = vec![AxisSet::new(); graph.nodes.len()];
     for (node_id, instance) in &graph.nodes {
         let exec_id = authored_to_exec[node_id];
@@ -319,7 +319,7 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         }
         let state_range = state_slot_count..state_slot_count + state_size;
         state_slot_count += state_size;
-        ranges.push(state_range.clone());
+        ranges[exec_id.index()] = state_range.clone();
 
         let inputs = resolved
             .signature
@@ -357,7 +357,7 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         } else {
             disabled_operation(&resolved.signature, ctx.value_types)
         };
-        exec_nodes.push(CompiledExecNode {
+        exec_nodes[exec_id.index()] = Some(CompiledExecNode {
             exec_id,
             authored_id: *node_id,
             execution_kind: resolved.execution_kind,
@@ -379,8 +379,12 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         };
     }
 
+    let exec_nodes = exec_nodes
+        .into_iter()
+        .map(|node| node.expect("type solving and compilation produce one node per exec id"))
+        .collect::<Vec<_>>();
     let debug_map = DebugSourceMap {
-        exec_to_authored: graph.nodes.keys().copied().collect(),
+        exec_to_authored: exec_nodes.iter().map(|node| node.authored_id).collect(),
     };
     let analysis = analyze_formula(
         &exec_nodes,
@@ -721,11 +725,7 @@ fn input_default(instance: &crate::ANodeInstance, socket: &SocketId, ctx: &Compi
         .default_value
 }
 
-fn topological_order(
-    graph: &AlchemistGraph,
-    registry: &ANodeRegistry,
-    authored_to_exec: &IndexMap<ANodeId, ExecNodeId>,
-) -> Result<Vec<ExecNodeId>, Vec<ANodeId>> {
+fn topological_order(graph: &AlchemistGraph, registry: &ANodeRegistry) -> Result<Vec<ANodeId>, Vec<ANodeId>> {
     let mut indegree = IndexMap::<ANodeId, usize>::new();
     let mut outgoing = IndexMap::<ANodeId, Vec<ANodeId>>::new();
     for node in graph.nodes.keys() {
@@ -755,7 +755,7 @@ fn topological_order(
         .collect();
     let mut order = Vec::with_capacity(graph.nodes.len());
     while let Some(node) = ready.pop_front() {
-        order.push(authored_to_exec[&node]);
+        order.push(node);
         for target in &outgoing[&node] {
             let degree = indegree.get_mut(target).expect("target node must exist");
             *degree -= 1;

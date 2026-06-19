@@ -32,6 +32,7 @@ mod metronome;
 mod negate;
 mod noise_generator;
 mod one_minus;
+mod pack_vec3;
 mod property;
 mod remap;
 mod smooth_filter;
@@ -56,6 +57,7 @@ pub enum PrimitiveNodeKind {
     Math,
     Function,
     Remap,
+    Clamp,
     SmoothFilter,
     OneMinus,
     Inverse,
@@ -70,6 +72,7 @@ pub enum PrimitiveNodeKind {
     GradientSampler,
     ConvertToColor,
     ExtractColor,
+    PackVec3,
     Concatenate,
     ConvertToString,
     Split,
@@ -84,12 +87,13 @@ pub enum PrimitiveNodeKind {
 }
 
 impl PrimitiveNodeKind {
-    const ALL: [Self; 30] = [
+    const ALL: [Self; 32] = [
         Self::Constant,
         Self::Property,
         Self::Math,
         Self::Function,
         Self::Remap,
+        Self::Clamp,
         Self::SmoothFilter,
         Self::OneMinus,
         Self::Inverse,
@@ -104,6 +108,7 @@ impl PrimitiveNodeKind {
         Self::GradientSampler,
         Self::ConvertToColor,
         Self::ExtractColor,
+        Self::PackVec3,
         Self::Concatenate,
         Self::ConvertToString,
         Self::Split,
@@ -125,6 +130,7 @@ impl PrimitiveNodeKind {
             Self::Math => "math",
             Self::Function => "function",
             Self::Remap => "remap",
+            Self::Clamp => "clamp",
             Self::SmoothFilter => "smooth_filter",
             Self::OneMinus => "one_minus",
             Self::Inverse => "inverse",
@@ -139,6 +145,7 @@ impl PrimitiveNodeKind {
             Self::GradientSampler => "gradient_sampler",
             Self::ConvertToColor => "convert_to_color",
             Self::ExtractColor => "extract_color",
+            Self::PackVec3 => "pack_vec3",
             Self::Concatenate => "concatenate",
             Self::ConvertToString => "convert_to_string",
             Self::Split => "split",
@@ -182,6 +189,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             PrimitiveNodeKind::Math => "Math",
             PrimitiveNodeKind::Function => "Function",
             PrimitiveNodeKind::Remap => "Remap",
+            PrimitiveNodeKind::Clamp => "Clamp",
             PrimitiveNodeKind::SmoothFilter => "Smooth Filter",
             PrimitiveNodeKind::OneMinus => "One Minus",
             PrimitiveNodeKind::Inverse => "Inverse",
@@ -196,6 +204,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             PrimitiveNodeKind::GradientSampler => "Gradient Sampler",
             PrimitiveNodeKind::ConvertToColor => "Convert To Color",
             PrimitiveNodeKind::ExtractColor => "Extract Color",
+            PrimitiveNodeKind::PackVec3 => "Pack Vec3",
             PrimitiveNodeKind::Concatenate => "Concatenate",
             PrimitiveNodeKind::ConvertToString => "Convert To String",
             PrimitiveNodeKind::Split => "Split",
@@ -220,6 +229,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             PrimitiveNodeKind::Math
             | PrimitiveNodeKind::Function
             | PrimitiveNodeKind::Remap
+            | PrimitiveNodeKind::Clamp
             | PrimitiveNodeKind::SmoothFilter
             | PrimitiveNodeKind::OneMinus
             | PrimitiveNodeKind::Inverse
@@ -230,6 +240,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             PrimitiveNodeKind::GradientSampler
             | PrimitiveNodeKind::ConvertToColor
             | PrimitiveNodeKind::ExtractColor => "Color",
+            PrimitiveNodeKind::PackVec3 => "Geometry",
             PrimitiveNodeKind::Concatenate | PrimitiveNodeKind::ConvertToString | PrimitiveNodeKind::Split => "String",
             PrimitiveNodeKind::BooleanOperation | PrimitiveNodeKind::Compare => "Logic",
             PrimitiveNodeKind::ConditionGate => "Flow",
@@ -506,6 +517,11 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                 "result",
                 PipelineCardinality::Elementwise,
             )],
+            PrimitiveNodeKind::Clamp => vec![unary_filter_capability(
+                "value",
+                "result",
+                PipelineCardinality::Elementwise,
+            )],
             PrimitiveNodeKind::SmoothFilter => vec![unary_filter_capability(
                 "value",
                 "result",
@@ -533,6 +549,12 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                 AutoWirePolicy::None,
                 PipelineCardinality::Reshape,
             )],
+            PrimitiveNodeKind::PackVec3 => vec![filter_capability(
+                None,
+                Some("value"),
+                AutoWirePolicy::None,
+                PipelineCardinality::Reshape,
+            )],
             PrimitiveNodeKind::ConditionGate => vec![filter_capability(
                 Some("value"),
                 Some("value"),
@@ -556,6 +578,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             }
             PrimitiveNodeKind::Function => function_signature(instance),
             PrimitiveNodeKind::Remap => float_signature(&["value", "in_min", "in_max", "out_min", "out_max"], "result"),
+            PrimitiveNodeKind::Clamp => generic_numeric_signature(&["value", "minimum", "maximum"], "result"),
             PrimitiveNodeKind::SmoothFilter | PrimitiveNodeKind::Speed => float_signature(&["value"], "result"),
             PrimitiveNodeKind::OneMinus | PrimitiveNodeKind::Inverse | PrimitiveNodeKind::Negate => {
                 generic_numeric_signature(&["value"], "result")
@@ -605,6 +628,15 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
             },
             PrimitiveNodeKind::ConvertToColor => convert_to_color_signature(instance),
             PrimitiveNodeKind::ExtractColor => extract_color_signature(instance),
+            PrimitiveNodeKind::PackVec3 => ANodeSignature {
+                inputs: vec![
+                    InputSocketDecl::new("x", "X", exact("float")),
+                    InputSocketDecl::new("y", "Y", exact("float")),
+                    InputSocketDecl::new("z", "Z", exact("float")),
+                ],
+                outputs: vec![OutputSocketDecl::new("value", "Value", exact("vec3"))],
+                ..ANodeSignature::default()
+            },
             PrimitiveNodeKind::Concatenate => ANodeSignature {
                 inputs: numbered_inputs("part", "Part", input_count(instance, 2), exact("string")),
                 outputs: vec![OutputSocketDecl::new("result", "Result", exact("string"))],
@@ -671,6 +703,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                 function: function::FunctionKind::from_config(instance),
             })),
             PrimitiveNodeKind::Remap => CompiledNodeOperation::Custom(Arc::new(remap::RemapEval)),
+            PrimitiveNodeKind::Clamp => CompiledNodeOperation::Clamp,
             PrimitiveNodeKind::SmoothFilter => {
                 CompiledNodeOperation::Custom(Arc::new(smooth_filter::SmoothFilterEval::from_config(instance)))
             }
@@ -730,6 +763,7 @@ impl ANodeDeclaration for PrimitiveNodeDeclaration {
                     mode: color_mode::ColorMode::from_config(instance),
                 }))
             }
+            PrimitiveNodeKind::PackVec3 => CompiledNodeOperation::Custom(Arc::new(pack_vec3::PackVec3Eval)),
             PrimitiveNodeKind::Concatenate => CompiledNodeOperation::Custom(Arc::new(concatenate::ConcatenateEval {
                 prefix: config_string(instance, "prefix", ""),
                 suffix: config_string(instance, "suffix", ""),

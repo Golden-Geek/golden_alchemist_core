@@ -1,8 +1,12 @@
 use crate::{
-    ANodeDeclaration, ANodeInstance, ANodeRoleCapability, ANodeSignature, ANodeTypeId, AutoWirePolicy, ExecutionKind,
-    InputSocketDecl, ManagedUiMode, OutputSocketDecl, PipelineCardinality, PipelineShape, PipelineShapeCheckItem,
-    PrimitiveNodeDeclaration, PrimitiveNodeKind, RuntimeValue, SignatureCtx, SocketId, SurfaceItemKind, TypeBindings,
-    TypeConstraint, ValueTypeId, ValueTypeRegistry, check_filter_pipeline_shapes, single_shape, value_set_shape,
+    AEdge, ANodeDeclaration, ANodeId, ANodeInstance, ANodeRoleCapability, ANodeSignature, ANodeTypeId, AlchemistGraph,
+    AutoWirePolicy, ExecutionKind, InputSocketDecl, ManagedItemId, ManagedItemInstance, ManagedItemUiState,
+    ManagedRegionDefinition, ManagedRegionId, ManagedRegionInstance, ManagedRegionKind, ManagedSocketRef,
+    ManagedUiMode, OutputSocketDecl, OutputSocketRef, PipelineCardinality, PipelineLoweringCtx,
+    PipelineLoweringDiagnosticKind, PipelineShape, PipelineShapeCheckItem, PrimitiveNodeDeclaration, PrimitiveNodeKind,
+    RuntimeValue, SignatureCtx, SocketId, SurfaceItemKind, TypeBindings, TypeConstraint, ValueTypeId,
+    ValueTypeRegistry, check_filter_pipeline_shapes, lower_filter_pipeline_region, primitive_node_registry,
+    single_shape, value_set_shape,
 };
 
 fn ctx(value_types: &ValueTypeRegistry) -> SignatureCtx<'_> {
@@ -23,6 +27,48 @@ fn primitive_instance(kind: PrimitiveNodeKind) -> (PrimitiveNodeDeclaration, ANo
     let declaration = PrimitiveNodeDeclaration::new(kind);
     let instance = ANodeInstance::new(declaration.type_id(), declaration.label());
     (declaration, instance)
+}
+
+fn managed_item(kind: PrimitiveNodeKind) -> ManagedItemInstance {
+    let declaration = PrimitiveNodeDeclaration::new(kind);
+    ManagedItemInstance {
+        id: ManagedItemId::new(),
+        anode: ANodeInstance::new(declaration.type_id(), declaration.label()),
+        enabled: true,
+        ui_state: ManagedItemUiState::default(),
+    }
+}
+
+fn boundary_graph() -> (AlchemistGraph, ANodeId, ANodeId) {
+    let mut graph = AlchemistGraph::new();
+    let input = graph
+        .add_node(ANodeInstance::new(ANodeTypeId::new("boundary_input"), "Boundary Input"))
+        .unwrap();
+    let output = graph
+        .add_node(ANodeInstance::new(
+            ANodeTypeId::new("boundary_output"),
+            "Boundary Output",
+        ))
+        .unwrap();
+    (graph, input, output)
+}
+
+fn filter_region(input: ANodeId, output: ANodeId) -> ManagedRegionDefinition {
+    ManagedRegionDefinition {
+        id: ManagedRegionId::new("filters"),
+        kind: ManagedRegionKind::FilterPipeline,
+        label: "Filters".into(),
+        input_socket: Some(ManagedSocketRef::new(input, "value")),
+        output_socket: Some(ManagedSocketRef::new(output, "value")),
+        accepted_roles: vec![SurfaceItemKind::Filter],
+    }
+}
+
+fn filter_region_instance(items: Vec<ManagedItemInstance>) -> ManagedRegionInstance {
+    ManagedRegionInstance {
+        region_id: ManagedRegionId::new("filters"),
+        items,
+    }
 }
 
 #[test]
@@ -152,6 +198,207 @@ fn expand_filter_broadcasts_single_value_to_valueset() {
         }
     );
     assert_eq!(result.steps[0].cardinality, PipelineCardinality::Expand);
+}
+
+#[test]
+fn lowering_autowires_enabled_filter_items_into_graph() {
+    let value_types = ValueTypeRegistry::with_primitives();
+    let nodes = primitive_node_registry();
+    let (graph, input, output) = boundary_graph();
+    let region = filter_region(input, output);
+    let instance = filter_region_instance(vec![
+        managed_item(PrimitiveNodeKind::Remap),
+        managed_item(PrimitiveNodeKind::ConditionGate),
+    ]);
+    let remap = instance.items[0].anode.id;
+    let gate = instance.items[1].anode.id;
+
+    let result = lower_filter_pipeline_region(
+        &graph,
+        &region,
+        &instance,
+        single_shape("float"),
+        &PipelineLoweringCtx {
+            value_types: &value_types,
+            nodes: &nodes,
+            properties: None,
+        },
+    );
+
+    assert!(result.is_valid(), "{:?}", result.diagnostics);
+    assert_eq!(result.inserted_nodes, vec![remap, gate]);
+    assert_eq!(result.graph.nodes.len(), graph.nodes.len() + 2);
+    assert_eq!(
+        result.graph.edges,
+        vec![
+            AEdge {
+                from: OutputSocketRef::new(input, "value"),
+                to: crate::InputSocketRef::new(remap, "value"),
+            },
+            AEdge {
+                from: OutputSocketRef::new(remap, "result"),
+                to: crate::InputSocketRef::new(gate, "value"),
+            },
+            AEdge {
+                from: OutputSocketRef::new(gate, "value"),
+                to: crate::InputSocketRef::new(output, "value"),
+            },
+        ]
+    );
+}
+
+#[test]
+fn lowering_skips_disabled_filter_items() {
+    let value_types = ValueTypeRegistry::with_primitives();
+    let nodes = primitive_node_registry();
+    let (graph, input, output) = boundary_graph();
+    let region = filter_region(input, output);
+    let mut disabled = managed_item(PrimitiveNodeKind::OneMinus);
+    disabled.enabled = false;
+    let disabled_node = disabled.anode.id;
+    let instance = filter_region_instance(vec![managed_item(PrimitiveNodeKind::Remap), disabled]);
+    let remap = instance.items[0].anode.id;
+
+    let result = lower_filter_pipeline_region(
+        &graph,
+        &region,
+        &instance,
+        single_shape("float"),
+        &PipelineLoweringCtx {
+            value_types: &value_types,
+            nodes: &nodes,
+            properties: None,
+        },
+    );
+
+    assert!(result.is_valid(), "{:?}", result.diagnostics);
+    assert_eq!(result.inserted_nodes, vec![remap]);
+    assert!(!result.graph.nodes.contains_key(&disabled_node));
+    assert_eq!(result.graph.edges.len(), 2);
+}
+
+#[test]
+fn lowering_rejects_non_filter_items_without_mutating_graph() {
+    let value_types = ValueTypeRegistry::with_primitives();
+    let nodes = primitive_node_registry();
+    let (graph, input, output) = boundary_graph();
+    let region = filter_region(input, output);
+    let instance = filter_region_instance(vec![managed_item(PrimitiveNodeKind::Constant)]);
+
+    let result = lower_filter_pipeline_region(
+        &graph,
+        &region,
+        &instance,
+        single_shape("float"),
+        &PipelineLoweringCtx {
+            value_types: &value_types,
+            nodes: &nodes,
+            properties: None,
+        },
+    );
+
+    assert!(!result.is_valid());
+    assert_eq!(result.graph, graph);
+    assert_eq!(result.shape.diagnostics.len(), 1);
+    assert!(result.shape.diagnostics[0].message.contains("not filter-capable"));
+}
+
+#[test]
+fn lowering_requires_linear_autowire_sockets() {
+    let value_types = ValueTypeRegistry::with_primitives();
+    let nodes = primitive_node_registry();
+    let (graph, input, output) = boundary_graph();
+    let region = filter_region(input, output);
+    let instance = filter_region_instance(vec![managed_item(PrimitiveNodeKind::Math)]);
+
+    let result = lower_filter_pipeline_region(
+        &graph,
+        &region,
+        &instance,
+        single_shape("float"),
+        &PipelineLoweringCtx {
+            value_types: &value_types,
+            nodes: &nodes,
+            properties: None,
+        },
+    );
+
+    assert!(!result.is_valid());
+    assert_eq!(result.graph, graph);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(
+        result.diagnostics[0].kind,
+        PipelineLoweringDiagnosticKind::MissingLinearAutowire
+    );
+    assert!(result.diagnostics[0].message.contains("linear autowire sockets"));
+}
+
+#[test]
+fn lowering_rejects_valueset_elementwise_until_lane_strategy_exists() {
+    let value_types = ValueTypeRegistry::with_primitives();
+    let nodes = primitive_node_registry();
+    let (graph, input, output) = boundary_graph();
+    let region = filter_region(input, output);
+    let instance = filter_region_instance(vec![managed_item(PrimitiveNodeKind::Remap)]);
+
+    let result = lower_filter_pipeline_region(
+        &graph,
+        &region,
+        &instance,
+        value_set_shape("float", Some(crate::ContextAxisId::new("input_lane"))),
+        &PipelineLoweringCtx {
+            value_types: &value_types,
+            nodes: &nodes,
+            properties: None,
+        },
+    );
+
+    assert!(!result.is_valid());
+    assert_eq!(result.graph, graph);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(
+        result.diagnostics[0].kind,
+        PipelineLoweringDiagnosticKind::UnsupportedValueSetElementwise
+    );
+    assert!(result.diagnostics[0].message.contains("lane-aware MapEach support"));
+}
+
+#[test]
+fn lowering_allows_whole_valueset_filters() {
+    let value_types = ValueTypeRegistry::with_primitives();
+    let nodes = primitive_node_registry();
+    let (graph, input, output) = boundary_graph();
+    let region = filter_region(input, output);
+    let instance = filter_region_instance(vec![managed_item(PrimitiveNodeKind::ConditionGate)]);
+    let gate = instance.items[0].anode.id;
+
+    let result = lower_filter_pipeline_region(
+        &graph,
+        &region,
+        &instance,
+        value_set_shape("float", Some(crate::ContextAxisId::new("input_lane"))),
+        &PipelineLoweringCtx {
+            value_types: &value_types,
+            nodes: &nodes,
+            properties: None,
+        },
+    );
+
+    assert!(result.is_valid(), "{:?}", result.diagnostics);
+    assert_eq!(result.inserted_nodes, vec![gate]);
+    assert_eq!(
+        result.graph.edges,
+        vec![
+            AEdge {
+                from: OutputSocketRef::new(input, "value"),
+                to: crate::InputSocketRef::new(gate, "value"),
+            },
+            AEdge {
+                from: OutputSocketRef::new(gate, "value"),
+                to: crate::InputSocketRef::new(output, "value"),
+            },
+        ]
+    );
 }
 
 struct ShapeOnlyDeclaration {

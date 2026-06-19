@@ -44,8 +44,9 @@ pub use node::{
     PipelineCardinality, SEND_ON_OUTPUT_CHANGE_ONLY_CONFIG, SignatureCtx,
 };
 pub use pipeline::{
+    FilterPipelineLoweringResult, PipelineLoweringCtx, PipelineLoweringDiagnostic, PipelineLoweringDiagnosticKind,
     PipelineShape, PipelineShapeCheckItem, PipelineShapeDiagnostic, PipelineShapeResult, PipelineShapeStep,
-    check_filter_pipeline_shapes, single_shape, value_set_shape,
+    check_filter_pipeline_shapes, lower_filter_pipeline_region, single_shape, value_set_shape,
 };
 pub use registry::{
     ANodeRegistry, ConversionKind, ConversionRule, FacetDescriptor, FacetRegistry, RegistryError, ValueTypeDescriptor,

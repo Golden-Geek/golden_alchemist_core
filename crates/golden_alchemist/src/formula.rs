@@ -2,8 +2,9 @@ use indexmap::IndexMap;
 
 use crate::{
     ANodeFieldPath, ANodeId, ANodeInstance, AlchemistGraph, ContextDimensionId, Diagnostic, FormulaId,
-    FormulaPropertyId, ManagedItemId, ManagedRegionId, ParamUiHints, RuntimeValue, SocketId, StableRef,
-    SurfaceContributionId, SurfaceItemId, SurfaceSectionId, ValueTypeId, ValueTypeSpec,
+    FormulaPropertyId, ManagedItemId, ManagedRegionId, ParamUiHints, PipelineLoweringCtx, PipelineLoweringDiagnostic,
+    PipelineShape, PipelineShapeDiagnostic, RuntimeValue, SocketId, StableRef, SurfaceContributionId, SurfaceItemId,
+    SurfaceSectionId, ValueTypeId, ValueTypeSpec, lower_filter_pipeline_region,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -307,6 +308,51 @@ impl AlchemistFormula {
         }
         Ok(graph)
     }
+
+    pub fn materialize_with_filter_pipelines(
+        &self,
+        instance: &AlchemistFormulaInstance,
+        lowering_ctx: &PipelineLoweringCtx<'_>,
+        initial_shapes: &[(ManagedRegionId, PipelineShape)],
+    ) -> Result<AlchemistGraph, FormulaMaterializationError> {
+        let mut graph = self.materialize(instance)?;
+        instance
+            .managed_regions
+            .validate_against(&self.surface)
+            .map_err(FormulaMaterializationError::ManagedRegionValidation)?;
+
+        for definition in self
+            .surface
+            .managed_regions
+            .iter()
+            .filter(|definition| definition.kind == ManagedRegionKind::FilterPipeline)
+        {
+            let region_instance = instance.managed_regions.regions.get(&definition.id).ok_or_else(|| {
+                FormulaMaterializationError::MissingManagedRegionInstance {
+                    region_id: definition.id.clone(),
+                }
+            })?;
+            let initial_shape = initial_shapes
+                .iter()
+                .find(|(region_id, _)| region_id == &definition.id)
+                .map(|(_, shape)| shape.clone())
+                .ok_or_else(|| FormulaMaterializationError::MissingManagedRegionInitialShape {
+                    region_id: definition.id.clone(),
+                })?;
+
+            let result = lower_filter_pipeline_region(&graph, definition, region_instance, initial_shape, lowering_ctx);
+            if !result.is_valid() {
+                return Err(FormulaMaterializationError::ManagedRegionLoweringFailed {
+                    region_id: definition.id.clone(),
+                    lowering_diagnostics: result.diagnostics,
+                    shape_diagnostics: result.shape.diagnostics,
+                });
+            }
+            graph = result.graph;
+        }
+
+        Ok(graph)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -354,4 +400,16 @@ pub enum FormulaMaterializationError {
     MissingSurfaceBinding(SurfaceItemId),
     #[error("formula surface binding targets missing ANode `{0}`")]
     MissingTargetNode(ANodeId),
+    #[error("{0}")]
+    ManagedRegionValidation(ManagedRegionValidationError),
+    #[error("formula instance is missing managed region `{region_id}`")]
+    MissingManagedRegionInstance { region_id: ManagedRegionId },
+    #[error("filter pipeline region `{region_id}` is missing an initial shape")]
+    MissingManagedRegionInitialShape { region_id: ManagedRegionId },
+    #[error("filter pipeline region `{region_id}` failed to lower")]
+    ManagedRegionLoweringFailed {
+        region_id: ManagedRegionId,
+        lowering_diagnostics: Vec<PipelineLoweringDiagnostic>,
+        shape_diagnostics: Vec<PipelineShapeDiagnostic>,
+    },
 }

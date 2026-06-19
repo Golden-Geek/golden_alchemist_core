@@ -27,6 +27,7 @@ fn primitive_catalog_contains_every_declaration() {
         "math",
         "function",
         "remap",
+        "clamp",
         "smooth_filter",
         "one_minus",
         "inverse",
@@ -41,6 +42,7 @@ fn primitive_catalog_contains_every_declaration() {
         "gradient_sampler",
         "convert_to_color",
         "extract_color",
+        "pack_vec3",
         "concatenate",
         "convert_to_string",
         "split",
@@ -69,6 +71,7 @@ fn filter_capable_node_discovery_is_declaration_driven() {
         "math",
         "function",
         "remap",
+        "clamp",
         "smooth_filter",
         "one_minus",
         "inverse",
@@ -78,6 +81,7 @@ fn filter_capable_node_discovery_is_declaration_driven() {
         "angle_conversion",
         "convert_to_color",
         "extract_color",
+        "pack_vec3",
         "condition_gate",
     ] {
         assert!(filter_ids.iter().any(|candidate| candidate == id), "{id}");
@@ -245,6 +249,7 @@ macro_rules! signature_test {
 signature_test!(math_signature_is_declared, Math, 2, 1);
 signature_test!(function_signature_is_declared, Function, 1, 1);
 signature_test!(remap_signature_is_declared, Remap, 5, 1);
+signature_test!(clamp_signature_is_declared, Clamp, 3, 1);
 signature_test!(smooth_filter_signature_is_declared, SmoothFilter, 1, 1);
 signature_test!(one_minus_signature_is_declared, OneMinus, 1, 1);
 signature_test!(inverse_signature_is_declared, Inverse, 1, 1);
@@ -259,6 +264,7 @@ signature_test!(angle_conversion_signature_is_declared, AngleConversion, 1, 1);
 signature_test!(gradient_sampler_signature_is_declared, GradientSampler, 1, 1);
 signature_test!(convert_to_color_signature_is_declared, ConvertToColor, 4, 1);
 signature_test!(extract_color_signature_is_declared, ExtractColor, 1, 4);
+signature_test!(pack_vec3_signature_is_declared, PackVec3, 3, 1);
 signature_test!(concatenate_signature_is_declared, Concatenate, 2, 1);
 signature_test!(convert_to_string_signature_is_declared, ConvertToString, 1, 1);
 signature_test!(split_signature_is_declared, Split, 1, 1);
