@@ -92,7 +92,7 @@ pub enum RegistryError {
     DuplicateANode(ANodeTypeId),
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ValueTypeRegistry {
     descriptors: IndexMap<ValueTypeId, ValueTypeDescriptor>,
 }
@@ -179,7 +179,7 @@ impl FacetRegistry {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ANodeRegistry {
     declarations: IndexMap<ANodeTypeId, Arc<dyn ANodeDeclaration>>,
 }
