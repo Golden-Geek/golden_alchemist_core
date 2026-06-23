@@ -105,7 +105,7 @@ pub enum SurfaceItemKind {
     Input,
     Filter,
     Output,
-    Action,
+    Command,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -128,8 +128,8 @@ pub enum ManagedRegionKind {
     InputSet,
     FilterPipeline,
     OutputSet,
-    ActionTrigger,
-    ActionCommands,
+    TriggerInput,
+    CommandSet,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

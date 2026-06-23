@@ -86,8 +86,8 @@ fn managed_region_kind_roundtrips_through_json() {
     let encoded = serde_json::to_string(&ManagedRegionKind::FilterPipeline).unwrap();
     assert_eq!(encoded, "\"filter_pipeline\"");
 
-    let decoded: ManagedRegionKind = serde_json::from_str("\"action_commands\"").unwrap();
-    assert_eq!(decoded, ManagedRegionKind::ActionCommands);
+    let decoded: ManagedRegionKind = serde_json::from_str("\"command_set\"").unwrap();
+    assert_eq!(decoded, ManagedRegionKind::CommandSet);
 }
 
 #[test]

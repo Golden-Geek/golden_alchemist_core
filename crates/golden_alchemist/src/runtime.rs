@@ -632,11 +632,35 @@ pub struct NodeEvaluation<'a, 'ctx> {
     pub ctx: &'a EvaluationCtx<'ctx>,
     pub inputs: &'a [RuntimeValue],
     pub properties: &'a RuntimePropertyFrame,
+    pub context: &'a RuntimeContextFrame,
+    pub debug: &'a mut DebugCaptureSink,
     pub state: &'a mut [RuntimeValue],
     pub intents: &'a mut Vec<RuntimeIntent>,
 }
 
+impl<'a, 'ctx> NodeEvaluation<'a, 'ctx> {
+    pub fn capture_debug_value(&mut self, output_socket: impl Into<SocketId>, value: RuntimeValue) {
+        let value_type = value.value_type();
+        self.debug.capture(DebugValueSample {
+            formula_id: None,
+            context_key: (!self.context.context_key().is_default_lane()).then(|| self.context.context_key().clone()),
+            author_node_id: self.author_node_id,
+            exec_node: self.exec_node,
+            output_socket: output_socket.into(),
+            output_slot: ValueSlotId::new(u32::MAX),
+            value_type,
+            value,
+            logical_tick: self.ctx.logical_tick,
+            status: OutputPreviewStatus::Unavailable,
+        });
+    }
+}
+
 pub trait CompiledNodeEvaluator: Send + Sync + Debug {
+    fn change_detection_inputs(&self, _ctx: &EvaluationCtx<'_>) -> Result<Vec<RuntimeValue>, String> {
+        Ok(Vec::new())
+    }
+
     fn evaluate(&self, evaluation: &mut NodeEvaluation<'_, '_>) -> Result<Vec<RuntimeValue>, String>;
 }
 
@@ -749,7 +773,7 @@ pub fn evaluate_compiled_graph(
                 continue;
             }
         };
-        let change_inputs = match change_detection_inputs(&node.operation, &inputs, frame.properties) {
+        let change_inputs = match change_detection_inputs(&node.operation, &inputs, frame.properties, frame.ctx) {
             Ok(change_inputs) => change_inputs,
             Err(message) => {
                 output.diagnostics.push(RuntimeDiagnostic {
@@ -777,6 +801,8 @@ pub fn evaluate_compiled_graph(
                 ctx: frame.ctx,
                 inputs: &inputs,
                 properties: frame.properties,
+                context: frame.context,
+                debug: &mut *frame.debug,
                 state,
                 intents: &mut output.intents,
             },
@@ -853,6 +879,7 @@ fn change_detection_inputs(
     operation: &CompiledNodeOperation,
     inputs: &[RuntimeValue],
     properties: &RuntimePropertyFrame,
+    ctx: &EvaluationCtx<'_>,
 ) -> Result<Vec<RuntimeValue>, String> {
     let mut change_inputs = inputs.to_vec();
     if let CompiledNodeOperation::ReadProperty(slot) = operation {
@@ -862,6 +889,9 @@ fn change_detection_inputs(
                 .cloned()
                 .ok_or_else(|| format!("property slot {} is unavailable", slot.index()))?,
         );
+    }
+    if let CompiledNodeOperation::Custom(evaluator) = operation {
+        change_inputs.extend(evaluator.change_detection_inputs(ctx)?);
     }
     Ok(change_inputs)
 }
