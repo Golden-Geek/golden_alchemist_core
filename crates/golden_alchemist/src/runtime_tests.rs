@@ -366,6 +366,39 @@ fn condition_gate_whole_valueset_gate_uses_default_whole_value() {
 }
 
 #[test]
+fn condition_gate_per_lane_application_reports_incompatible_mode() {
+    let mut graph = AlchemistGraph::new();
+    let value = graph.add_node(constant(RuntimeValue::Float(5.0))).unwrap();
+    let condition = graph.add_node(constant(RuntimeValue::Bool(true))).unwrap();
+    let mut gate_node = node("condition_gate");
+    gate_node
+        .config
+        .set("gate_application", RuntimeValue::String("per_lane".into()));
+    let gate = graph.add_node(gate_node).unwrap();
+    graph
+        .connect(OutputSocketRef::new(value, "value"), InputSocketRef::new(gate, "value"))
+        .unwrap();
+    graph
+        .connect(
+            OutputSocketRef::new(condition, "value"),
+            InputSocketRef::new(gate, "condition"),
+        )
+        .unwrap();
+    let mut runtime = runtime(&graph);
+
+    let output = evaluate(&mut runtime, 1);
+
+    assert_eq!(output.diagnostics.len(), 1);
+    assert!(
+        output.diagnostics[0]
+            .message
+            .contains("ConditionGate per-lane application requires lane-aware ValueSet lowering"),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
 fn evaluate_compiled_graph_uses_supplied_memory() {
     let mut graph = AlchemistGraph::new();
     let source = graph.add_node(constant(RuntimeValue::Bool(true))).unwrap();
