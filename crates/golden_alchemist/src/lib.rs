@@ -92,6 +92,6 @@ mod typing_tests;
 pub use compile::{
     CompileCtx, CompileResult, CompiledAlchemistFormula, CompiledAlchemistGraph, CompiledExecNode,
     CompiledFormulaProperty, CompiledFormulaPropertySchema, CompiledNodeOperation, DebugSourceMap, DisabledOutput,
-    FormulaAnalysis, FormulaCompileKey, InputValueSource, OutputRoute, RuntimeStateLayout, RuntimeSubscription,
-    compile_graph,
+    FORMULA_INPUT_VALUE_TYPE, FormulaAnalysis, FormulaCompileKey, InputValueSource, OutputRoute, RuntimeStateLayout,
+    RuntimeSubscription, compile_graph, formula_input_value_ref,
 };

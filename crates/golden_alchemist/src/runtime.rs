@@ -277,9 +277,7 @@ pub enum DebugCaptureMode {
 
 impl Default for DebugCaptureMode {
     fn default() -> Self {
-        Self::All {
-            history_len: usize::MAX,
-        }
+        Self::Off
     }
 }
 
@@ -761,7 +759,7 @@ pub fn evaluate_compiled_graph(
         let inputs = node
             .inputs
             .iter()
-            .map(|source| runtime_input_value(source, memory, frame.ctx.registries.value_types))
+            .map(|source| runtime_input_value(source, memory, frame.ctx.inputs, frame.ctx.registries.value_types))
             .collect::<Result<Vec<_>, _>>();
         let inputs = match inputs {
             Ok(inputs) => inputs,
@@ -922,16 +920,17 @@ pub fn evaluate_compiled_graph_stateless(
 fn runtime_input_value(
     source: &InputValueSource,
     memory: &AlchemistMemory,
+    inputs: &RuntimeInputSnapshot,
     value_types: &ValueTypeRegistry,
 ) -> Result<RuntimeValue, String> {
     match source {
         InputValueSource::Slot(slot) => Ok(memory.values[slot.index()].clone()),
         InputValueSource::Converted { source, target_type } => {
-            let value = runtime_input_value(source, memory, value_types)?;
+            let value = runtime_input_value(source, memory, inputs, value_types)?;
             value_types.convert_automatically(&value, target_type)
         }
         InputValueSource::Component { source, component } => {
-            let value = runtime_input_value(source, memory, value_types)?;
+            let value = runtime_input_value(source, memory, inputs, value_types)?;
             value
                 .component(*component)
                 .ok_or_else(|| format!("value type `{}` has no component `{component:?}`", value.value_type()))
@@ -941,14 +940,19 @@ fn runtime_input_value(
             base,
             components,
         } => {
-            let base = runtime_input_value(base, memory, value_types)?;
+            let base = runtime_input_value(base, memory, inputs, value_types)?;
             let mut value = value_types.convert_automatically(&base, target_type)?;
             for (component, source) in components {
-                let component_value = runtime_input_value(source, memory, value_types)?;
+                let component_value = runtime_input_value(source, memory, inputs, value_types)?;
                 value = value.with_component(*component, &component_value)?;
             }
             Ok(value)
         }
+        InputValueSource::RuntimeInput { reference, fallback } => inputs
+            .get(reference)
+            .cloned()
+            .map(Ok)
+            .unwrap_or_else(|| runtime_input_value(fallback, memory, inputs, value_types)),
         InputValueSource::Constant(value) => Ok(value.clone()),
         InputValueSource::Unset => Ok(RuntimeValue::Unit),
     }

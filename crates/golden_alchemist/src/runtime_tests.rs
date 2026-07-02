@@ -9,7 +9,7 @@ use crate::{
     OutputPreviewStatus, OutputSocketRef, PROCESS_ON_INPUT_CHANGE_ONLY_CONFIG, RuntimeContextFrame,
     RuntimeInputSnapshot, RuntimeOutput, RuntimePropertyFrame, RuntimeRegistries, RuntimeValue, SocketId, StableRef,
     TriggerValue, TypeBindingSource, TypeVar, ValueStorageKind, ValueTypeDescriptor, ValueTypeId, ValueTypeRegistry,
-    compile_graph, evaluate_compiled_graph, primitive_node_registry,
+    compile_graph, evaluate_compiled_graph, formula_input_value_ref, primitive_node_registry,
 };
 
 fn node(type_id: &str) -> ANodeInstance {
@@ -97,13 +97,16 @@ fn evaluate(runtime: &mut AlchemistRuntime, logical_tick: u64) -> crate::Runtime
     let registries = RuntimeRegistries {
         value_types: &value_types,
     };
-    runtime.evaluate(&EvaluationCtx {
-        logical_tick,
-        delta_time: Duration::from_millis(16),
-        events: &[],
-        inputs: &RuntimeInputSnapshot::default(),
-        registries: &registries,
-    })
+    runtime.evaluate_with_capture_mode(
+        &EvaluationCtx {
+            logical_tick,
+            delta_time: Duration::from_millis(16),
+            events: &[],
+            inputs: &RuntimeInputSnapshot::default(),
+            registries: &registries,
+        },
+        DebugCaptureMode::All { history_len: 64 },
+    )
 }
 
 fn evaluate_with_capture_mode(
@@ -140,7 +143,7 @@ fn evaluate_capturing_unchanged_outputs(runtime: &mut AlchemistRuntime, logical_
         registries: &registries,
     };
     let context = RuntimeContextFrame::default_lane();
-    let mut debug = DebugCaptureSink::new(DebugCaptureMode::default());
+    let mut debug = DebugCaptureSink::new(DebugCaptureMode::All { history_len: 64 });
     evaluate_compiled_graph(
         &runtime.compiled,
         &mut runtime.memory,
@@ -153,6 +156,48 @@ fn evaluate_capturing_unchanged_outputs(runtime: &mut AlchemistRuntime, logical_
             capture_unchanged_outputs: true,
         },
     )
+}
+
+#[test]
+fn debug_capture_default_is_off() {
+    assert_eq!(DebugCaptureMode::default(), DebugCaptureMode::Off);
+}
+
+#[test]
+fn runtime_input_snapshot_overrides_unconnected_socket_default() {
+    let mut graph = AlchemistGraph::new();
+    let mut debug = node("debug_value");
+    let socket = SocketId::new("value");
+    debug.input_defaults.insert(socket.clone(), RuntimeValue::Float(1.0));
+    let debug_id = graph.add_node(debug).unwrap();
+    let reference = formula_input_value_ref(graph.id, debug_id, &socket);
+    let mut runtime = runtime(&graph);
+    let value_types = ValueTypeRegistry::with_primitives();
+    let registries = RuntimeRegistries {
+        value_types: &value_types,
+    };
+
+    let fallback_ctx = EvaluationCtx {
+        logical_tick: 1,
+        delta_time: Duration::from_millis(16),
+        events: &[],
+        inputs: &RuntimeInputSnapshot::default(),
+        registries: &registries,
+    };
+    let fallback = runtime.evaluate_with_capture_mode(&fallback_ctx, DebugCaptureMode::All { history_len: 16 });
+    assert_eq!(sample_value(&fallback, debug_id, "value"), RuntimeValue::Float(1.0));
+
+    let mut inputs = RuntimeInputSnapshot::default();
+    inputs.insert(reference, RuntimeValue::Float(2.5));
+    let override_ctx = EvaluationCtx {
+        logical_tick: 2,
+        delta_time: Duration::from_millis(16),
+        events: &[],
+        inputs: &inputs,
+        registries: &registries,
+    };
+    let overridden = runtime.evaluate_with_capture_mode(&override_ctx, DebugCaptureMode::All { history_len: 16 });
+    assert_eq!(sample_value(&overridden, debug_id, "value"), RuntimeValue::Float(2.5));
 }
 
 fn sample_value(output: &RuntimeOutput, node: ANodeId, socket: &str) -> RuntimeValue {
@@ -426,7 +471,7 @@ fn evaluate_compiled_graph_uses_supplied_memory() {
         inputs: &inputs,
         registries: &registries,
     };
-    let mut first_debug = DebugCaptureSink::default();
+    let mut first_debug = DebugCaptureSink::new(DebugCaptureMode::All { history_len: 64 });
     let first = evaluate_compiled_graph(
         &compiled,
         &mut memory,

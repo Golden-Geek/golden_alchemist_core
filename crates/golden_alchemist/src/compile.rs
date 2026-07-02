@@ -8,11 +8,22 @@ use std::{
 use indexmap::IndexMap;
 
 use crate::{
-    ANodeId, ANodeRegistry, AlchemistFormula, AlchemistGraph, AxisSet, CompiledNodeEvaluator, Diagnostic,
-    DiagnosticOrigin, DiagnosticSeverity, ExecNodeId, ExecutionKind, ExposedSurface, FormulaId, FormulaPropertyId,
-    FormulaPropertySchema, FormulaPropertySlotId, FormulaRef, ResolvedANodeSignature, RuntimeValue, SocketId,
-    TypeSolveCtx, ValueComponent, ValueSlotId, ValueTypeId, ValueTypeRegistry, component_value_type, solve_types,
+    ANodeId, ANodeRegistry, AlchemistFormula, AlchemistGraph, AlchemistGraphId, AxisSet, CompiledNodeEvaluator,
+    Diagnostic, DiagnosticOrigin, DiagnosticSeverity, ExecNodeId, ExecutionKind, ExposedSurface, FormulaId,
+    FormulaPropertyId, FormulaPropertySchema, FormulaPropertySlotId, FormulaRef, ResolvedANodeSignature, RuntimeValue,
+    SocketId, StableRef, TypeSolveCtx, ValueComponent, ValueSlotId, ValueTypeId, ValueTypeRegistry,
+    component_value_type, solve_types,
 };
+
+pub const FORMULA_INPUT_VALUE_TYPE: &str = "alchemist.formula_input";
+
+#[must_use]
+pub fn formula_input_value_ref(graph_id: AlchemistGraphId, node_id: ANodeId, socket: &SocketId) -> StableRef {
+    StableRef::new(
+        ValueTypeId::new(FORMULA_INPUT_VALUE_TYPE),
+        format!("{graph_id}:{node_id}:{}", socket.as_str()),
+    )
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputValueSource {
@@ -29,6 +40,10 @@ pub enum InputValueSource {
         target_type: ValueTypeId,
         base: Box<InputValueSource>,
         components: Vec<(ValueComponent, InputValueSource)>,
+    },
+    RuntimeInput {
+        reference: StableRef,
+        fallback: Box<InputValueSource>,
     },
     Constant(RuntimeValue),
     Unset,
@@ -480,6 +495,9 @@ fn extend_axes_from_input_source(target: &mut AxisSet, source: &InputValueSource
                 extend_axes_from_input_source(target, source, slot_axes);
             }
         }
+        InputValueSource::RuntimeInput { fallback, .. } => {
+            extend_axes_from_input_source(target, fallback, slot_axes);
+        }
         InputValueSource::Constant(_) | InputValueSource::Unset => {}
     }
 }
@@ -633,12 +651,20 @@ fn input_source(
 
     let base = base_edge
         .and_then(|edge| edge_input_source(edge, target_type, solved, value_slots))
-        .or_else(|| input_default(instance, socket, ctx).map(InputValueSource::Constant))
         .or_else(|| {
-            target_type.and_then(|value_type| {
-                ctx.value_types
-                    .default_value(value_type)
-                    .map(InputValueSource::Constant)
+            let fallback = input_default(instance, socket, ctx)
+                .map(InputValueSource::Constant)
+                .or_else(|| {
+                    target_type.and_then(|value_type| {
+                        ctx.value_types
+                            .default_value(value_type)
+                            .map(InputValueSource::Constant)
+                    })
+                })
+                .unwrap_or(InputValueSource::Unset);
+            Some(InputValueSource::RuntimeInput {
+                reference: formula_input_value_ref(graph.id, node_id, socket),
+                fallback: Box::new(fallback),
             })
         });
 
