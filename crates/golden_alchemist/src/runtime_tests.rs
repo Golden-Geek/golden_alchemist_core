@@ -613,6 +613,44 @@ fn pure_math_graph_evaluates_in_compiled_order() {
 }
 
 #[test]
+fn idle_pure_graph_skips_all_exec_nodes_after_initial_evaluation() {
+    let mut graph = AlchemistGraph::new();
+    let left = graph.add_node(constant(RuntimeValue::Float(2.0))).unwrap();
+    let right = graph.add_node(constant(RuntimeValue::Float(3.0))).unwrap();
+    let add = graph.add_node(node("math")).unwrap();
+    graph
+        .connect(OutputSocketRef::new(left, "value"), InputSocketRef::new(add, "value1"))
+        .unwrap();
+    graph
+        .connect(OutputSocketRef::new(right, "value"), InputSocketRef::new(add, "value2"))
+        .unwrap();
+    let mut runtime = runtime(&graph);
+    let exec_ids = runtime
+        .compiled
+        .debug_map
+        .exec_to_authored
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| ([left, right, add].contains(node)).then_some(crate::ExecNodeId::new(index as u32)))
+        .collect::<Vec<_>>();
+
+    let first = evaluate(&mut runtime, 1);
+    assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+    assert_eq!(runtime.memory.last_executed_nodes().len(), exec_ids.len());
+
+    let second = evaluate(&mut runtime, 2);
+
+    assert!(second.diagnostics.is_empty(), "{:?}", second.diagnostics);
+    assert!(
+        runtime.memory.last_executed_nodes().is_empty(),
+        "unchanged pure graph should not execute nodes on an idle tick"
+    );
+    for exec_id in exec_ids {
+        assert_eq!(runtime.execution_count(exec_id), 1);
+    }
+}
+
+#[test]
 fn disabled_single_input_output_node_bypasses_matching_value_type() {
     let mut graph = AlchemistGraph::new();
     let source = graph.add_node(constant(RuntimeValue::Float(4.0))).unwrap();

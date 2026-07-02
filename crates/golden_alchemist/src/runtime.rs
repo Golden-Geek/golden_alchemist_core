@@ -10,9 +10,9 @@ use smallvec::SmallVec;
 use smol_str::SmolStr;
 
 use crate::{
-    ANodeId, ColorValue, CompiledAlchemistGraph, CompiledFormulaPropertySchema, CompiledNodeOperation, ExecNodeId,
-    FormulaId, FormulaPropertyId, FormulaPropertySlotId, InputValueSource, RuntimeValue, SocketId, StableRef,
-    TriggerValue, ValueSlotId, ValueTypeId, ValueTypeRegistry,
+    ANodeId, ColorValue, CompiledAlchemistGraph, CompiledExecNode, CompiledFormulaPropertySchema,
+    CompiledNodeOperation, ExecNodeId, FormulaId, FormulaPropertyId, FormulaPropertySlotId, InputValueSource,
+    RuntimeValue, SocketId, StableRef, TriggerValue, ValueSlotId, ValueTypeId, ValueTypeRegistry,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -365,8 +365,12 @@ pub struct RuntimeOutput {
 pub struct AlchemistMemory {
     values: Vec<RuntimeValue>,
     value_initialized: Vec<bool>,
+    value_revisions: Vec<u64>,
     states: Vec<RuntimeValue>,
     node_inputs: Vec<Option<Vec<RuntimeValue>>>,
+    node_initialized: Vec<bool>,
+    dirty_nodes: Vec<bool>,
+    last_executed_nodes: Vec<ExecNodeId>,
 }
 
 impl AlchemistMemory {
@@ -375,8 +379,12 @@ impl AlchemistMemory {
         Self {
             values: vec![RuntimeValue::Unit; compiled.state_layout.value_slot_count],
             value_initialized: vec![false; compiled.state_layout.value_slot_count],
+            value_revisions: vec![0; compiled.state_layout.value_slot_count],
             states: vec![RuntimeValue::Unit; compiled.state_layout.state_slot_count],
             node_inputs: vec![None; compiled.exec_nodes.len()],
+            node_initialized: vec![false; compiled.exec_nodes.len()],
+            dirty_nodes: vec![false; compiled.exec_nodes.len()],
+            last_executed_nodes: Vec::new(),
         }
     }
 
@@ -399,13 +407,21 @@ impl AlchemistMemory {
     fn is_compatible_with_graph(&self, compiled: &CompiledAlchemistGraph) -> bool {
         self.values.len() == compiled.state_layout.value_slot_count
             && self.value_initialized.len() == compiled.state_layout.value_slot_count
+            && self.value_revisions.len() == compiled.state_layout.value_slot_count
             && self.states.len() == compiled.state_layout.state_slot_count
             && self.node_inputs.len() == compiled.exec_nodes.len()
+            && self.node_initialized.len() == compiled.exec_nodes.len()
+            && self.dirty_nodes.len() == compiled.exec_nodes.len()
     }
 
     #[must_use]
     pub fn is_stateless(&self) -> bool {
         self.states.is_empty()
+    }
+
+    #[must_use]
+    pub fn last_executed_nodes(&self) -> &[ExecNodeId] {
+        &self.last_executed_nodes
     }
 }
 
@@ -735,7 +751,7 @@ impl AlchemistRuntime {
                 capture_unchanged_outputs: false,
             },
         );
-        for exec_id in &self.compiled.topo_order {
+        for exec_id in self.memory.last_executed_nodes() {
             self.execution_counts[exec_id.index()] += 1;
         }
         self.evaluating = false;
@@ -754,13 +770,14 @@ pub fn evaluate_compiled_graph(
     frame: EvaluationFrame<'_, '_>,
 ) -> RuntimeOutput {
     let mut output = RuntimeOutput::default();
+    seed_dirty_nodes(compiled, memory, &frame, &mut output);
     for exec_id in &compiled.topo_order {
+        if !memory.dirty_nodes[exec_id.index()] {
+            continue;
+        }
+        memory.dirty_nodes[exec_id.index()] = false;
         let node = &compiled.exec_nodes[exec_id.index()];
-        let inputs = node
-            .inputs
-            .iter()
-            .map(|source| runtime_input_value(source, memory, frame.ctx.inputs, frame.ctx.registries.value_types))
-            .collect::<Result<Vec<_>, _>>();
+        let inputs = runtime_node_inputs(node, memory, frame.ctx);
         let inputs = match inputs {
             Ok(inputs) => inputs,
             Err(message) => {
@@ -783,13 +800,17 @@ pub fn evaluate_compiled_graph(
         };
         if node.process_on_input_change_only && !frame.force_process_unchanged_inputs {
             let previous_inputs = memory.node_inputs.get(exec_id.index()).and_then(Option::as_ref);
-            if previous_inputs.is_some_and(|previous| runtime_values_equivalent(previous, &change_inputs)) {
+            if memory.node_initialized[exec_id.index()]
+                && previous_inputs.is_some_and(|previous| runtime_values_equivalent(previous, &change_inputs))
+            {
                 continue;
             }
         }
         if let Some(previous_inputs) = memory.node_inputs.get_mut(exec_id.index()) {
             *previous_inputs = Some(change_inputs);
         }
+        memory.node_initialized[exec_id.index()] = true;
+        memory.last_executed_nodes.push(*exec_id);
         let state = &mut memory.states[node.state_range.clone()];
         let result = evaluate_operation(
             &node.operation,
@@ -814,6 +835,10 @@ pub fn evaluate_compiled_graph(
                         || previous_value.is_none_or(|previous| !runtime_value_equivalent(previous, &value));
                     memory.values[slot.index()] = value.clone();
                     memory.value_initialized[slot.index()] = true;
+                    if output_changed {
+                        memory.value_revisions[slot.index()] = memory.value_revisions[slot.index()].saturating_add(1);
+                        mark_slot_dependents_dirty(compiled, memory, *slot);
+                    }
                     if node.send_on_output_change_only && !output_changed && !frame.capture_unchanged_outputs {
                         continue;
                     }
@@ -871,6 +896,89 @@ pub fn evaluate_compiled_graph(
     }
     output.debug_samples = frame.debug.samples().to_vec();
     output
+}
+
+fn seed_dirty_nodes(
+    compiled: &CompiledAlchemistGraph,
+    memory: &mut AlchemistMemory,
+    frame: &EvaluationFrame<'_, '_>,
+    output: &mut RuntimeOutput,
+) {
+    memory.dirty_nodes.fill(false);
+    memory.last_executed_nodes.clear();
+
+    if frame.force_process_unchanged_inputs {
+        for exec_id in &compiled.topo_order {
+            memory.dirty_nodes[exec_id.index()] = true;
+        }
+        return;
+    }
+
+    for exec_id in &compiled.topo_order {
+        if !memory.node_initialized[exec_id.index()] {
+            memory.dirty_nodes[exec_id.index()] = true;
+        }
+    }
+
+    for exec_id in &compiled.dependencies.always_process_nodes {
+        memory.dirty_nodes[exec_id.index()] = true;
+    }
+
+    for exec_id in &compiled.dependencies.external_input_nodes {
+        match node_change_inputs_changed(compiled, memory, *exec_id, frame) {
+            Ok(true) => {
+                memory.dirty_nodes[exec_id.index()] = true;
+            }
+            Ok(false) => {}
+            Err(message) => {
+                output.diagnostics.push(RuntimeDiagnostic {
+                    exec_node: *exec_id,
+                    message,
+                });
+            }
+        }
+    }
+}
+
+fn node_change_inputs_changed(
+    compiled: &CompiledAlchemistGraph,
+    memory: &AlchemistMemory,
+    exec_id: ExecNodeId,
+    frame: &EvaluationFrame<'_, '_>,
+) -> Result<bool, String> {
+    if !memory.node_initialized[exec_id.index()] {
+        return Ok(true);
+    }
+    let node = &compiled.exec_nodes[exec_id.index()];
+    let inputs = runtime_node_inputs(node, memory, frame.ctx)?;
+    let change_inputs = change_detection_inputs(&node.operation, &inputs, frame.properties, frame.ctx)?;
+    let previous_inputs = memory.node_inputs.get(exec_id.index()).and_then(Option::as_ref);
+    Ok(!previous_inputs.is_some_and(|previous| runtime_values_equivalent(previous, &change_inputs)))
+}
+
+fn mark_slot_dependents_dirty(compiled: &CompiledAlchemistGraph, memory: &mut AlchemistMemory, slot: ValueSlotId) {
+    if let Some(dependents) = compiled.dependencies.slot_dependents.get(slot.index()) {
+        for dependent in dependents {
+            memory.dirty_nodes[dependent.index()] = true;
+        }
+    }
+}
+
+fn runtime_node_inputs(
+    node: &CompiledExecNode,
+    memory: &AlchemistMemory,
+    ctx: &EvaluationCtx<'_>,
+) -> Result<SmallVec<[RuntimeValue; 4]>, String> {
+    let mut inputs = SmallVec::<[RuntimeValue; 4]>::new();
+    for source in &node.inputs {
+        inputs.push(runtime_input_value(
+            source,
+            memory,
+            ctx.inputs,
+            ctx.registries.value_types,
+        )?);
+    }
+    Ok(inputs)
 }
 
 fn change_detection_inputs(

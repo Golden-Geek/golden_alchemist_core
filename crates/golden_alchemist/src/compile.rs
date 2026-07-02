@@ -153,6 +153,13 @@ pub struct DebugSourceMap {
     pub exec_to_authored: Vec<ANodeId>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeDependencyGraph {
+    pub slot_dependents: Vec<Vec<ExecNodeId>>,
+    pub external_input_nodes: Vec<ExecNodeId>,
+    pub always_process_nodes: Vec<ExecNodeId>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FormulaAnalysis {
     pub has_stateful_nodes: bool,
@@ -175,6 +182,7 @@ pub struct CompiledAlchemistGraph {
     pub state_layout: RuntimeStateLayout,
     pub output_routes: Vec<OutputRoute>,
     pub subscriptions: Vec<RuntimeSubscription>,
+    pub dependencies: RuntimeDependencyGraph,
     pub debug_map: DebugSourceMap,
 }
 
@@ -408,6 +416,7 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
         next_value_slot as usize,
         &direct_context_axes,
     );
+    let dependencies = runtime_dependencies(&exec_nodes, next_value_slot as usize);
     CompileResult {
         compiled: Some(Arc::new(CompiledAlchemistGraph {
             exec_nodes,
@@ -421,9 +430,67 @@ pub fn compile_graph(graph: &AlchemistGraph, ctx: &CompileCtx<'_>) -> CompileRes
             },
             output_routes: Vec::new(),
             subscriptions: Vec::new(),
+            dependencies,
             debug_map,
         })),
         diagnostics,
+    }
+}
+
+fn runtime_dependencies(exec_nodes: &[CompiledExecNode], value_slot_count: usize) -> RuntimeDependencyGraph {
+    let mut slot_dependents = vec![Vec::new(); value_slot_count];
+    let mut external_input_nodes = Vec::new();
+    let mut always_process_nodes = Vec::new();
+
+    for node in exec_nodes {
+        if !node.process_on_input_change_only {
+            always_process_nodes.push(node.exec_id);
+        }
+        let mut has_external_input = matches!(
+            node.operation,
+            CompiledNodeOperation::ReadProperty(_) | CompiledNodeOperation::Custom(_)
+        );
+        for source in &node.inputs {
+            collect_runtime_dependencies(source, node.exec_id, &mut slot_dependents, &mut has_external_input);
+        }
+        if has_external_input {
+            external_input_nodes.push(node.exec_id);
+        }
+    }
+
+    RuntimeDependencyGraph {
+        slot_dependents,
+        external_input_nodes,
+        always_process_nodes,
+    }
+}
+
+fn collect_runtime_dependencies(
+    source: &InputValueSource,
+    dependent: ExecNodeId,
+    slot_dependents: &mut [Vec<ExecNodeId>],
+    has_external_input: &mut bool,
+) {
+    match source {
+        InputValueSource::Slot(slot) => {
+            if let Some(dependents) = slot_dependents.get_mut(slot.index()) {
+                dependents.push(dependent);
+            }
+        }
+        InputValueSource::Converted { source, .. } | InputValueSource::Component { source, .. } => {
+            collect_runtime_dependencies(source, dependent, slot_dependents, has_external_input);
+        }
+        InputValueSource::Composite { base, components, .. } => {
+            collect_runtime_dependencies(base, dependent, slot_dependents, has_external_input);
+            for (_, source) in components {
+                collect_runtime_dependencies(source, dependent, slot_dependents, has_external_input);
+            }
+        }
+        InputValueSource::RuntimeInput { fallback, .. } => {
+            *has_external_input = true;
+            collect_runtime_dependencies(fallback, dependent, slot_dependents, has_external_input);
+        }
+        InputValueSource::Constant(_) | InputValueSource::Unset => {}
     }
 }
 
